@@ -5,9 +5,9 @@
 
 import string, urlparse, urllib
 
-__version__= 0,6
+__version__= 0,7
 __author__ = 'Andrew Clover <and@doxdesk.com>'
-__date__   = '23 July 2003'
+__date__   = '17 September 2003'
 __all__    = [
   'getDOMImplementation', 'getDOMImplementations', 'parse', 'parseString'
 ]
@@ -428,6 +428,22 @@ class NamedNodeMap(NodeList):
         return False
     return True
 
+  ## Bods patch
+  #
+  # Python-style dictionary access
+  #
+  #def keys(self):
+  #  return map(lambda n: n.nodeName, self.values())
+  #
+  #def values(self):
+  #  l = []
+  #  for i in range(0, self.length):
+  #    l.append(self.item(i))
+  #  return l
+  #
+  #def items(self):
+  #  return map(lambda n: (n.nodeName, n), self.values())
+
 
 # DOM base classes
 #
@@ -539,7 +555,7 @@ class Node(DOMObject):
 
   def _getDescendants(self, descendants):
     for child in self._childNodes:
-      descendants._append(child)
+      descendants.append(child)
       child._getDescendants(descendants)
 
   # Hierarchy access
@@ -1044,6 +1060,7 @@ class NamedNodeNS(Node):
       if char in _NOTNAME:
         raise InvalidCharacterErr(value, char)
     self._prefix= value
+    self._changed()
   def _renameNode(self, namespaceURI, qualifiedName):
     for char in qualifiedName:
       if char in _NOTNAME:
@@ -1177,8 +1194,8 @@ class Document(Node):
   def isDefaultNamespace(self, namespaceURI):
     root= self.documentElement
     if root is not None:
-      return root.isDefaultNamespace(prefix)
-    return false
+      return root.isDefaultNamespace(namespaceURI)
+    return False
   def lookupNamespaceURI(self, prefix):
     root= self.documentElement
     if root is not None:
@@ -1281,6 +1298,7 @@ class Document(Node):
     if n.ownerDocument is not self:
       raise WrongDocumentErr(n, self)
     n._renameNode(namespaceURI, qualifiedName)
+    n._changed()
     n._callUserDataHandlers(UserDataHandler.NODE_RENAMED, self, None)
     return self
       
@@ -2383,7 +2401,7 @@ class DOMInput(DOMObject):
         data= unicode(self._actualBytes, actualEncoding)
       except LookupError:
         raise DOMErrorUnsupportedEncoding(None)
-      if data[0:]==unichr(0xFEFF):
+      if data[:1]==unichr(0xFEFF):
         data= data[1:]
       return r(r(r(r(data,ibmsp,'\n'),'\r\n','\n'),'\r','\n'),unisp,'\n')
 
@@ -3292,7 +3310,7 @@ class DOMSerializer(DOMObject):
       destination.write(output, node._ownerDocument)
     except DOMErrorException, exn:
       self._config._handleError(exn)
-  def writeURI(self, node, uri):
+  def writeToURI(self, node, uri):
     destination= DOMOutput()
     destination.systemId= uri
     self.write(destination, node)
@@ -3492,9 +3510,9 @@ class ParseError(DOMErrorException):
   type= 'pxdom-parse-error'
   def __init__(self, parser, message):
     DOMErrorException.__init__(self, None) 
-    self._parser= parser
     self._message= message
-    line, column= self._parser._getLocation()
+    self._parser= parser
+    line, column= parser._getLocation()
     self.location= DOMLocator(None, line, column)
   def __str__(self):
     index= self._parser._index
@@ -3505,6 +3523,8 @@ class ParseError(DOMErrorException):
     post= self._parser._data[index:index+30]
     pre= string.split(pre, '\n')[-1]
     post= string.split(post, '\n')[0]
+    pre= string.join(map(lambda c: (c, '?')[ord(c)>=128], pre), '')
+    post= string.join(map(lambda c: (c, '?')[ord(c)>=128], post), '')
     line, column= self._parser._getLocation()
     return 'XML parsing error: %s, around line %s, char %s:\n%s%s\n%s^' % (
       self._message, line, column, pre, post, ' '*len(pre)
