@@ -5,25 +5,25 @@
 
 import string, urlparse, urllib
 
-__version__= 0,7
+__version__= 0,8
 __author__ = 'Andrew Clover <and@doxdesk.com>'
-__date__   = '17 September 2003'
+__date__   = '18 October 2003'
 __all__    = [
   'getDOMImplementation', 'getDOMImplementations', 'parse', 'parseString'
 ]
 
 
-# XML 1.1 extended whitespace characters
+# Unicode, XML 1.1 extra line separators
 #
 try:
-  ibmsp= unichr(0x85)
-  unisp= unichr(0x2028)
+  EBCLS= unichr(0x85)
+  UNILS= unichr(0x2028)
 except NameError:
   globals()['unicode']= None
-  ibmsp= chr(0x85)
-  unisp= ''
+  EBCLS= chr(0x85)
+  UNILS= ''
 
-# Back-compatibility boolean type
+# Backwards-compatibility boolean type
 #
 try:
   True
@@ -69,7 +69,6 @@ class DOMObject:
   """
   def __init__(self, readonly= False):
     self._readonly= readonly
-
   def _get_readonly(self):
     return self._readonly
   def _set_readonly(self, value):
@@ -99,58 +98,17 @@ class DOMObject:
     setter(value)
 
 
-class TypeInfo(DOMObject):
-  """ Object belonging to an Element or Attribute returning information about
-      its value type. Since only DTDs are supported, this returns None except
-      for Attribute typeNames, which might be grabbable from the internal
-      subset's attlists.
-  """
-  def __init__(self, ownerNode):
-    DOMObject.__init__(self, False)
-    self._ownerNode= ownerNode
-  def _get_typeName(self):
-    if (
-      self._ownerNode.nodeType==Node.ATTRIBUTE_NODE and
-      self._ownerNode.ownerElement is not None and
-      self._ownerNode.ownerDocument is not None and
-      self._ownerNode.ownerDocument.doctype is not None
-    ):
-      tagName= self._ownerNode.ownerElement.tagName
-      attlist= self._ownerNode.ownerDocument.doctype.attlists.getNamedItem(
-        tagName
-      )
-      if attlist is not None:
-        attdecl= attlist.declarations.getNamedItem(self._ownerNode.name)
-        if attdecl is not None:
-          return AttributeDeclaration.ATTR_NAMES[attdecl.attributeType]
-    return None
-  def _get_typeNamespace(self):
-    return None
-
-
-class UserDataHandler:
-  """ Any Python object that supplies a 'handle' method can be bound to the
-      DOM type UserDataHandler; this merely holds its static constants. NB.
-      NODE_DELETED is never called because (as noted in the DOM Core spec)
-      we have no idea when the object will be deleted by Python. No __del__
-      handler is provided for this because it stops the garbage collector
-      from freeing nodes with reference cycles (of which pxdom has many).
-  """
-  [NODE_CLONED, NODE_IMPORTED, NODE_DELETED, NODE_RENAMED
-  ]= range(1, 5)
-
-
 class DOMImplementation(DOMObject):
   """ Main pxtl.dom implementation interface, a singleton class. The pxdom
       module itself implements the DOMImplementationSource interface, so you
-      can get hold of an implementation so: pxtl.dom.getDOMImplementation('')
+      can get hold of an implementation with pxdom.getDOMImplementation('')
   """
   [MODE_SYNCHRONOUS,MODE_ASYNCHRONOUS
   ]=range(1, 3)
 
   _features= {
-    'core': ['1.0', '2.0', '3.0'],
     'xml':  ['1.0', '2.0', '3.0'],
+    'core':        ['2.0', '3.0'],
     'ls':                 ['3.0'],
     'ls-elementls':       ['3.0'],
     'ls-documentls':      ['3.0']
@@ -168,6 +126,8 @@ class DOMImplementation(DOMObject):
       return self
 
   def createDocument(self, namespaceURI, qualifiedName, doctype):
+    if namespaceURI=='':
+      namespaceURI= None
     document= Document()
     if doctype is not None:
       document.appendChild(doctype)
@@ -182,7 +142,7 @@ class DOMImplementation(DOMObject):
     doctype.entities.readonly= True
     doctype.notations.readonly= True
     return doctype
-  def createDOMParser(self, mode, schemaType):
+  def createDOMParser(self, mode= MODE_SYNCHRONOUS, schemaType= None):
     if mode==DOMImplementation.MODE_ASYNCHRONOUS:
       raise NotSupportedErr(self, 'createDOMParser.mode')
     if schemaType is not None and schemaType!='http://www.w3.org/TR/REC-xml':
@@ -197,7 +157,7 @@ class DOMImplementation(DOMObject):
 _implementation= DOMImplementation()
 
 
-def getDOMImplementation(features):
+def getDOMImplementation(features= ''):
   """ DOM 3 Core hook to get the Implementation object. If features is
       supplied, only return the implementation if all features are satisfied.
   """
@@ -208,7 +168,7 @@ def getDOMImplementation(features):
   return _implementation
 
 
-def getDOMImplementations(features):
+def getDOMImplementationList(features= ''):
   """ DOM 3 Core method to get implementations in a list. For pxdom this will
       only ever be the single implementation, if any.
   """
@@ -220,7 +180,7 @@ def getDOMImplementations(features):
   return implementationList
 
 
-# Structures
+# DOM structure objects
 #
 class DOMList(DOMObject):
   """ A list structure that can be accessed either using the DOM IDL methods
@@ -286,7 +246,8 @@ class NodeList(DOMList):
 
 class ChildNodeList(NodeList):
   """ A NodeList of children of the owner node. Alterations to the list result
-      in calls to the parent's DOM methods (required by Python DOM bindings).
+      in calls to the parent's DOM methods (this seems to be required by the
+      Python DOM bindings, although not in used in practice).
   """
   def __setitem__(self, index, value):
     self._ownerNode.replaceChild(value, self._list[index])
@@ -354,14 +315,16 @@ class NodeListByTagName(NodeList):
       if childNode.nodeType in (Node.ELEMENT_NODE,Node.ENTITY_REFERENCE_NODE):
         self._walk(childNode)
 
+
 class NamedNodeMap(NodeList):
-  """ Dictionary-style object used for various doctype mappings. Abstract
-      class - subclass must set _childTypes to specify what sort of nodes it
-      wants.
+  """ Dictionary-style object used for mappings. Abstract class - subclass must
+      set _childTypes to specify what sort of nodes it wants.
   """
   _childTypes= []
 
   def getNamedItemNS(self, namespaceURI, localName):
+    if namespaceURI=='':
+      namespaceURI= None
     for node in self._list:
       if (
         (namespaceURI==NONS and localName==node.nodeName) or
@@ -374,7 +337,7 @@ class NamedNodeMap(NodeList):
     node= self.getNamedItemNS(arg.namespaceURI, arg.localName)
     self._writeItem(node, arg)
     return node
- 
+
   def removeNamedItemNS(self, namespaceURI, localName):
     node= self.getNamedItemNS(namespaceURI, localName)
     if node is None:
@@ -428,21 +391,119 @@ class NamedNodeMap(NodeList):
         return False
     return True
 
-  ## Bods patch
-  #
-  # Python-style dictionary access
-  #
-  #def keys(self):
-  #  return map(lambda n: n.nodeName, self.values())
-  #
-  #def values(self):
-  #  l = []
-  #  for i in range(0, self.length):
-  #    l.append(self.item(i))
-  #  return l
-  #
-  #def items(self):
-  #  return map(lambda n: (n.nodeName, n), self.values())
+    # Python dictionary-style methods for minidom compatibility. This is
+    # inconsistent with how Python dictionaries normally work, and is subject
+    # to change. It is recommended to use the standard DOM methods instead.
+    #
+    def __getitem__(self, key):
+      if isinstance(key, type(0)):
+        return self._list[key]
+      elif isinstance(key, type(())):
+        return self.getNamedItemNS(key[0], key[1])
+      else:
+        return self.getNamedItem(key)
+    def __delitem__(self, key):
+      if isinstance(key, type(0)):
+        self._writeItem(self._list[key], None)
+      elif isinstance(key, type(())):
+        self.removeNamedItemNS(key[0], key[1])
+      else:
+        return self.removeNamedItem(key)
+    def __setitem__(self, key, value):
+      if isinstance(value, Attr):
+        if isinstance(key, type(0)):
+          self._writeItem(self._list[key], value)
+        elif isinstance(key, type(())):
+          self._ownerNode.setAttributeNodeNS(value)
+        else:
+          self._ownerNode.setAttributeNode(value)
+      else:
+        if isinstance(key, type(0)):
+          self._list[key].value= value
+        elif isinstance(key, type(())):
+          return self._ownerNode.setAttributeNS(key[0], key[1], value)
+        else:
+          return self._ownerNode.setAttribute(key, value)
+    def values(self):
+      return self._list[:]
+    def keys(self):
+      return map(lambda a: a.nodeName, self._list)
+    def items(self):
+      return map(lambda a: (a.nodeName, a.value), self._list)
+    def keysNS(self):
+      return map(lambda a: (a.namespaceURI, a.localName), self._list)
+    def itemsNS(self):
+      return map(lambda a: ((a.namespaceURI,a.localName),a.value), self._list)
+
+
+# Various lightweight DOM value types
+#
+class TypeInfo(DOMObject):
+  """ Value type belonging to an Element or Attribute supplying information
+      about its schema type. Since only DTDs are supported, this returns nulls
+      except for Attribute typeNames, which might be grabbable from the
+      internal subset's attlists.
+  """
+  def __init__(self, ownerNode):
+    DOMObject.__init__(self, False)
+    self._ownerNode= ownerNode
+  def _get_typeName(self):
+    if (
+      self._ownerNode.nodeType==Node.ATTRIBUTE_NODE and
+      self._ownerNode.ownerElement is not None and
+      self._ownerNode.ownerDocument is not None and
+      self._ownerNode.ownerDocument.doctype is not None
+    ):
+      tagName= self._ownerNode.ownerElement.tagName
+      attlist= self._ownerNode.ownerDocument.doctype.attlists.getNamedItem(
+        tagName
+      )
+      if attlist is not None:
+        attdecl= attlist.declarations.getNamedItem(self._ownerNode.name)
+        if attdecl is not None:
+          return AttributeDeclaration.ATTR_NAMES[attdecl.attributeType]
+    return None
+  def _get_typeNamespace(self):
+    return None
+
+
+class DOMLocator(DOMObject):
+  """ Value type used to return information on the source document and position
+      of a node. Used in the standard DOM to locate DOMErrors; pxdom also
+      allows any Node to be located this way.
+  """
+  def __init__(self, node= None, lineNumber= -1, columnNumber= -1):
+    self._relatedNode= node
+    self._lineNumber= lineNumber
+    self._columnNumber= columnNumber
+    if node is None:
+      self._uri= ''
+    else:
+      self._uri= node._ownerDocument.documentURI
+  def _get_lineNumber(self):
+    return self._lineNumber
+  def _get_columnNumber(self):
+    return self._columnNumber
+  def _get_byteOffset(self):
+    return -1
+  def _get_utf16Offset(self):
+    return -1
+  def _get_relatedNode(self):
+    return self._relatedNode
+  def _get_uri(self):
+    return self._uri
+
+
+class UserDataHandler:
+  """ Any Python object that supplies a 'handle' method can be bound to the
+      DOM type UserDataHandler; this merely holds its static constants. NB.
+      NODE_DELETED is never called because (as noted in the DOM Core spec)
+      we have no idea when the object will be deleted by Python. No __del__
+      handler is provided for this because it stops the garbage collector
+      from freeing nodes with reference cycles (of which pxdom has many).
+  """
+  [NODE_CLONED, NODE_IMPORTED, NODE_DELETED, NODE_RENAMED, NODE_ADOPTED
+  ]= range(1, 6)
 
 
 # DOM base classes
@@ -528,16 +589,25 @@ class Node(DOMObject):
         self._callUserDataHandlers(UserDataHandler.NODE_IMPORTED, self, node)
       else:
         self._callUserDataHandlers(UserDataHandler.NODE_CLONED, self, node)
+    elif ownerDocument is not None:
+      self._callUserDataHandlers(UserDataHandler.NODE_ADOPTED, self, None)
     return node
 
   def _recurseTo(self, node, clone, ownerDocument, readonly):
     if self._attributes is not None:
+      toRemove= []
       for attr in self._attributes:
-        if (ownerDocument is None and not clone) or attr.specified:
-          r= attr._recurse(True, clone, ownerDocument, readonly)
-          if clone:
-            node._attributes._append(r)
-            r._containerNode= node
+        if not attr.specified:
+          if (ownerDocument is not None and not clone):
+            toRemove.append(attr)
+          if (ownerDocument is not None and clone):
+            continue
+        r= attr._recurse(True, clone, ownerDocument, readonly)
+        if clone:
+          node._attributes._append(r)
+          r._containerNode= node
+      for attr in toRemove:
+        self.removeAttributeNode(attr)
 
   def _cloneTo(self, node):
     node._ownerDocument= self._ownerDocument
@@ -600,7 +670,6 @@ class Node(DOMObject):
 
   def hasChildNodes(self):
     return self._childNodes.length>0
-
 
   # Hierarchy alteration
   #
@@ -858,38 +927,65 @@ class Node(DOMObject):
     return None
 
   def normalize(self,
-    text= True, atts= False, ents= False, ns= False, cdata= False,
+    text= True, atts= False, ents= False, ns= False, cdata= False, unws= False,
     unnsattr=False, unns=False, uncdata=False, uncomment=False, unent=False
   ):
     if self._readonly:
       raise NoModificationAllowedErr(self, 'normalize')
+
+    # Normalise attributes
+    #
     if self._attributes is not None:
       for index in range(self._attributes.length):
         self._attributes.item(index).normalize(
-          text,atts,ents,ns,cdata,unnsattr,unns,uncdata,uncomment,unent
+          text,atts,ents,ns,cdata,unws,unnsattr,unns,uncdata,uncomment,unent
         )
-    for child in self._childNodes._list[:]:
-      child.normalize(
-        text, atts, ents, ns, cdata, unnsattr, unns, uncdata, uncomment, unent
-      )
-      if text and child.nodeType==Node.TEXT_NODE:
-        if child.data=='':
+
+    # Replace entities with their contents before doing other processing in a
+    # separate pass
+    #
+    if unent:
+      for child in self._childNodes._list[:]:
+        if child.nodeType==Node.ENTITY_REFERENCE_NODE:
+          for grandchild in child.childNodes:
+            grandchild= grandchild._recurse(True, clone= True, readonly= False)
+            self.insertBefore(grandchild, child)
           self.removeChild(child)
-        else:
+    for child in self._childNodes._list[:]:
+
+      # Concatenate adjacent text nodes, remove ignorable whitespace
+      #
+      if child.nodeType==Node.TEXT_NODE:
+        if (text and child.data=='' or
+          (unws and child.isElementContentWhitespace)
+        ):
+          self.removeChild(child)
+          continue
+        elif text:
           previous= child.previousSibling
           if previous is not None and previous.nodeType==Node.TEXT_NODE:
             previous.data= previous.data+child.data
             self.removeChild(child)
+            continue
+
+      # Convert CDATA to text, concatenating if possible
+      #
       if child.nodeType==Node.CDATA_SECTION_NODE:
         if uncdata:
           previous= child.previousSibling
-          if previous is not None and previous.nodeType==Node.TEXT_NODE:
+          if child.data=='':
+            self.removeChild(child)
+          elif previous is not None and previous.nodeType==Node.TEXT_NODE:
             previous.data= previous.data+child.data
             self.removeChild(child)
           else:
             text= self._ownerDocument.createTextNode(self.data)
             self.replaceChild(text, child)
+          continue
         else:
+
+          # Split CDATA sections including string ']]>'
+          #
           if string.find(child.data, ']]>')!=-1:
             config= self._ownerDocument.config
             if config.getParameter('split-cdata-sections'):
@@ -902,15 +998,18 @@ class Node(DOMObject):
                 newChild= self._ownerDocument.createCDATASection(data)
                 self.insertBefore(newChild, refChild)
               config._handleError(DOMErrorCdataSectionSplitted(child))
+              continue
             else:
               config._handleError(DOMErrorInvalidDataInCdataSection(child))
+
+      # Remove comments. If node remains, recurse into it.
+      #
       if uncomment and child.nodeType==Node.COMMENT_NODE:
         self.removeChild(child)
-      if unent and child.nodeType==Node.ENTITY_REFERENCE_NODE:
-        for grandchild in child.childNodes:
-          grandchild= grandchild._recurse(True, clone= True, readonly= False)
-          self.insertBefore(grandchild, child)
-        self.removeChild(child)
+        continue
+      child.normalize(
+        text,atts,ents,ns,cdata,unws,unnsattr,unns,uncdata,uncomment,unent
+      )
 
   def _get_baseURI(self):
     if self._attributes is not None:
@@ -950,6 +1049,16 @@ class Node(DOMObject):
       self._containerNode._changed()
 
 
+class EntityMap(NamedNodeMap):
+  _childTypes= [Node.ENTITY_NODE]
+class NotationMap(NamedNodeMap):
+  _childTypes= [Node.NOTATION_NODE]
+class ElementDeclarationMap(NamedNodeMap):
+  _childTypes= [Node.ELEMENT_DECLARATION_NODE]
+class AttributeDeclarationMap(NamedNodeMap):
+  _childTypes= [Node.ATTRIBUTE_DECLARATION_NODE]
+class AttributeListMap(NamedNodeMap):
+  _childTypes= [Node.ATTRIBUTE_LIST_NODE]
 class AttrMap(NamedNodeMap):
   """ A node map used for storing the attributes of an element, and updating
       the defaulted attributes automatically on changes.
@@ -980,17 +1089,6 @@ class AttrMap(NamedNodeMap):
                 declaration.defaultType==AttributeDeclaration.DEFAULT_VALUE
               ):
                 declaration._createAttribute(self._ownerNode)
-
-class EntityMap(NamedNodeMap):
-  _childTypes= [Node.ENTITY_NODE]
-class NotationMap(NamedNodeMap):
-  _childTypes= [Node.NOTATION_NODE]
-class ElementDeclarationMap(NamedNodeMap):
-  _childTypes= [Node.ELEMENT_DECLARATION_NODE]
-class AttributeDeclarationMap(NamedNodeMap):
-  _childTypes= [Node.ATTRIBUTE_DECLARATION_NODE]
-class AttributeListMap(NamedNodeMap):
-  _childTypes= [Node.ATTRIBUTE_LIST_NODE]
 
 
 class NamedNode(Node):
@@ -1085,17 +1183,19 @@ class NamedNodeNS(Node):
       self._prefix= prefix
       self._localName= localName
   def normalize(self,
-    text= True, atts= False, ents= False, ns= False, cdata= False,
+    text= True, atts= False, ents= False, ns= False, cdata= False, unws= False,
     unnsattr=False, unns=False, uncdata=False, uncomment=False, unent=False
   ):
     Node.normalize(
-      self,text,atts,ents,ns,cdata,unnsattr,unns,uncdata,uncomment,unent
+      self,text,atts,ents,ns,cdata,unws,unnsattr,unns,uncdata,uncomment,unent
     )
     if ents:
       if self._prefix is not None and self._namespaceURI is None:
         self._namespaceURI= self._lookupNamespaceURI(self._prefix)
 
   def isDefaultNamespace(self, namespaceURI):
+    if namespaceURI=='':
+      namespaceURI= None
     return self.lookupNamespaceURI(None)==namespaceURI
   def lookupNamespaceURI(self, prefix):
     if prefix=='xmlns':
@@ -1107,6 +1207,8 @@ class NamedNodeNS(Node):
       localName= 'xmlns'
     return self._lookupNamespaceURI(localName)
   def lookupPrefix(self, namespaceURI):
+    if namespaceURI=='':
+      namespaceURI= None
     if namespaceURI is None:
       return None
     if namespaceURI==NSNS:
@@ -1215,6 +1317,8 @@ class Document(Node):
   def createElementNS(
     self, namespaceURI, qualifiedName, _strict= True, _default= True
   ):
+    if namespaceURI=='':
+      namespaceURI= None
     prefix, localName= _splitName(qualifiedName)
     if (
       localName is None or
@@ -1229,6 +1333,8 @@ class Document(Node):
   def createAttribute(self, name):
     return Attr(self, NONS, name, None, True)
   def createAttributeNS(self, namespaceURI, qualifiedName, _strict= True):
+    if namespaceURI=='':
+      namespaceURI= None
     prefix, localName= _splitName(qualifiedName)
     if (
       localName is None or
@@ -1265,13 +1371,15 @@ class Document(Node):
   def getElementsByTagName(self, name):
     return NodeListByTagName(self, NONS, name)
   def getElementsByTagNameNS(self, namespaceURI, localName):
+    if namespaceURI=='':
+      namespaceURI= None
     return NodeListByTagName(self, namespaceURI, localName)
   def getElementById(self, elementId):
     return self._getElementById(self, elementId)
   def _getElementById(self, node, elementId):
     if node._attributes is not None:
       for attr in node._attributes:
-        if attr.isId() and attr.value==elementId:
+        if attr.isId and attr.value==elementId:
           return node
     if Node.ELEMENT_NODE in node._childTypes:
       for child in node._childNodes:
@@ -1281,35 +1389,42 @@ class Document(Node):
     return None
 
   def importNode(self, importedNode, deep):
-    if importedNode.nodeType in (
-      Node.DOCUMENT_NODE, Node.DOCUMENT_TYPE_NODE
-    ):
+    if importedNode.nodeType in (Node.DOCUMENT_NODE, Node.DOCUMENT_TYPE_NODE):
       raise NotSupportedErr(importedNode, 'importNode')
     return importedNode._recurse(deep, clone= True, ownerDocument= self)
   def adoptNode(self, source):
-    if source.nodeType==Node.ELEMENT_NODE:
-      source.parentNode.removeChild(source)
-    else:
+    if source._containerNode!=None:
+      if source.nodeType==Node.ATTRIBUTE_NODE:
+        source._containerNode.removeAttributeNode(source)
+      else:
+        source._containerNode.removeChild(source)
       source._containerNode= None
-    return source._recurse(True, ownerDocument= self)
+    if source.nodeType==Node.ATTRIBUTE_NODE:
+      source._specified= True
+    dest= source._recurse(True, ownerDocument= self)
+    dest.normalize(False, ents= True)
+    return dest
   def renameNode(self, n, namespaceURI, qualifiedName):
     if self._readonly:
       raise NoModificationAllowedErr(self, 'renameNode')
     if n.ownerDocument is not self:
       raise WrongDocumentErr(n, self)
+    if namespaceURI=='':
+      namespaceURI= None
     n._renameNode(namespaceURI, qualifiedName)
     n._changed()
     n._callUserDataHandlers(UserDataHandler.NODE_RENAMED, self, None)
     return self
       
   def normalizeDocument(self):
+    unws= not self._config.getParameter('element-content-whitespace')
     uncdata= not self._config.getParameter('cdata-sections')
     uncomment= not self._config.getParameter('comments')
     unent= not self._config.getParameter('entities')
     unns= not self._config.getParameter('namespaces')
     unnsattr= not self._config.getParameter('namespace-declarations')
     self.normalize(
-      True, True, True, True, True, unnsattr, unns, uncdata, uncomment, unent
+      True,True,True,True,True,unws,unnsattr,unns,uncdata,uncomment,unent
     )
 
   def _get_async(self):
@@ -1385,17 +1500,19 @@ class Element(NamedNodeNS):
       return self.namespaceURI
     return NamedNodeNS.lookupNamespaceURI(self, prefix)
   def lookupPrefix(self, namespaceURI):
+    if namespaceURI=='':
+      namespaceURI= None
     if self.prefix is not None and self.namespaceURI is not None:
       if self.namespaceURI==namespaceURI:
         return self.prefix
     return NamedNodeNS.lookupPrefix(self, namespaceURI)
 
   def normalize(self,
-    text= True, atts= False, ents= False, ns= False, cdata= False,
+    text= True, atts= False, ents= False, ns= False, cdata= False, unws= False,
     unnsattr=False, unns=False, uncdata=False, uncomment=False, unent=False
   ):
     NamedNodeNS.normalize(
-      self,text,atts,ents,ns,cdata,unnsattr,unns,uncdata,uncomment,unent
+      self,text,atts,ents,ns,cdata,unws,unnsattr,unns,uncdata,uncomment,unent
     )
     if ns and self._namespaceURI!=NONS:
       if self._lookupNamespaceURI(self._prefix)!=self._namespaceURI:
@@ -1409,7 +1526,7 @@ class Element(NamedNodeNS):
     for index in range(self._attributes.length):
       attr= self._attributes.item(index)
       attr.normalize(
-        text, atts, ents, ns, cdata, unnsattr, unns, uncdata, uncomment, unent
+        text,atts,ents,ns,cdata,unws,unnsattr,unns,uncdata,uncomment,unent
       )
       if unnsattr:
         if attr.namespaceURI==NSNS:
@@ -1476,6 +1593,8 @@ class Element(NamedNodeNS):
   def getElementsByTagName(self, name):
     return NodeListByTagName(self, NONS, name)
   def getElementsByTagNameNS(self, namespaceURI, localName):
+    if namespaceURI=='':
+      namespaceURI= None
     return NodeListByTagName(self, namespaceURI, localName)
 
   def setIdAttribute(self, name, isId):
@@ -1494,6 +1613,8 @@ class Element(NamedNodeNS):
     node._isId= isId
 
   def _renameNode(self, namespaceURI, qualifiedName):
+    if namespaceURI=='':
+      namespaceURI= None
     NamedNodeNS._renameNode(self, namespaceURI, qualifiedName)
     self._setDefaultAttributes()
 
@@ -1594,10 +1715,12 @@ class Attr(NamedNodeNS):
 
   def _get_specified(self):
     return self._specified
-  def isId(self):
+  def _get_isId(self):
     return self._isId
 
   def _renameNode(self, namespaceURI, qualifiedName):
+    if namespaceURI=='':
+      namespaceURI= None
     owner= self._containerNode
     if owner is not None:
       owner.removeAttributeNode(self)
@@ -1606,11 +1729,11 @@ class Attr(NamedNodeNS):
       owner.setAttributeNodeNS(self)
 
   def normalize(self,
-    text= True, atts= False, ents= False, ns= False, cdata= False,
+    text= True, atts= False, ents= False, ns= False, cdata= False, unws= False,
     unnsattr=False, unns=False, uncdata=False, uncomment=False, unent=False
   ):
     NamedNodeNS.normalize(
-      self,text,atts,ents,ns,cdata,unnsattr,unns,uncdata,uncomment,unent
+      self,text,atts,ents,ns,cdata,unws,unnsattr,unns,uncdata,uncomment,unent
     )
     if ns and self._namespaceURI not in (NONS, NSNS, XMNS):
       prefixNamespace= self._lookupNamespaceURI(self._prefix)
@@ -1731,18 +1854,22 @@ class Text(CharacterData):
     return Node.TEXT_NODE
   def _get_nodeName(self):
     return '#text'
-  def isWhitespaceInElementContent(self):
-    container= self
-    while True:
-      container= container._containerNode
-      if container is None:
-        return False
-      if container.nodeType==Node.ATTRIBUTE_NODE:
-        return False
-      if container.nodeType==Node.ELEMENT_NODE:
-        break
-    for char in self._data:
-      if char not in ' \t\n':
+
+  def _get_isElementContentWhitespace(self):
+    pn= self._containerNode
+    if pn is None or pn.nodeType!=Node.ELEMENT_NODE:
+      return False
+    contentType= ElementDeclaration.MIXED_CONTENT
+    if self._ownerDocument.config.getParameter('pxdom-assume-element-content'):
+      contentType= ElementDeclaration.ELEMENT_CONTENT
+    if self._ownerDocument.doctype is not None:
+      eldec= self._ownerDocument.doctype.elements.getNamedItem(pn.nodeName)
+      if eldec is not None:
+        contentType= eldec.contentType
+    if contentType!=ElementDeclaration.ELEMENT_CONTENT:
+      return False
+    for c in self._data:
+      if c not in ' \t\n':
         return False
     return True
 
@@ -1795,7 +1922,7 @@ class Text(CharacterData):
       return None
     self._data= value
     return self
-    
+
   def _getLogicallyAdjacentTextNodes(self):
     ok= (Node.TEXT_NODE, Node.CDATA_SECTION_NODE, Node.ENTITY_REFERENCE_NODE)
     node= self
@@ -1835,7 +1962,11 @@ class Text(CharacterData):
         break
       node= next
     return nodes
+
   def _getMarkup(self, config, filter, newLine):
+    if not config.getParameter('element-content-whitespace'):
+      if self.isElementContentWhitespace:
+        return ''
     accepted= NodeFilter.FILTER_ACCEPT
     if filter is not None and (filter.whatToShow & NodeFilter.SHOW_TEXT)>0:
       accepted= filter.acceptNode(self)
@@ -1927,7 +2058,7 @@ class EntityReference(NamedNode):
   def _get_nodeType(self):
     return Node.ENTITY_REFERENCE_NODE
   def normalize(self,
-    text= True, atts= False, ents= False, ns= False, cdata= False,
+    text= True, atts= False, ents= False, ns= False, cdata= False, unws= False,
     unnsattr=False, unns=False, uncdata=False, uncomment=False, unent=False
   ):
     if ents:
@@ -1941,7 +2072,7 @@ class EntityReference(NamedNode):
             clone= child._recurse(True, clone= True)
             self.appendChild(clone)
             clone.normalize(
-              False,atts,ents,ns,cdata,unnsattr,unns,uncdata,uncomment,unent
+              False,atts,ents,ns,cdata,unws,unnsattr,unns,uncdata,uncomment,unent
             )
             clone._recurse(True, readonly= True)
       self.readonly= True
@@ -2035,10 +2166,10 @@ class DocumentType(NamedNode):
     return Entity(self._ownerDocument, name, publicId, systemId, notationName)
   def createNotation(self, name, publicId, systemId):
     return Notation(self._ownerDocument, name, publicId, systemId)
-  def createElementDeclaration(self, name, content):
-    return ElementDeclaration(self._ownerDocument, name, content)
-  def createAttributeDeclarationList(self, name):
-    return AttributeDeclarationList(self._ownerDocument, name)
+  def createElementDeclaration(self, name, contentType, elements):
+    return ElementDeclaration(self._ownerDocument, name, contentType,elements)
+  def createAttributeListDeclaration(self, name):
+    return AttributeListDeclaration(self._ownerDocument, name)
   def createAttributeDeclaration(self,
     name, attributeType, typeValues, defaultType
   ):
@@ -2046,11 +2177,11 @@ class DocumentType(NamedNode):
       name, attributeType, typeValues, defaultType
     )
   def normalize(self,
-    text= True, atts= False, ents= False, ns= False, cdata= False,
+    text= True, atts= False, ents= False, ns= False, cdata= False, unws= False,
     unnsattr=False, unns=False, uncdata=False, uncomment=False, unent=False
   ):
     NamedNode.normalize(
-      self,text,atts,ents,ns,cdata,unnsattr,unns,uncdata,uncomment,unent
+      self,text,atts,ents,ns,cdata,unws,unnsattr,unns,uncdata,uncomment,unent
     )
     if unent:
       while self._entities.length>0:
@@ -2125,21 +2256,66 @@ class Notation(NamedNode):
   def _get_systemId(self):
     return self._systemId
 
+
+# Extended node types for document type modelling - not part of standard DOM
+#
 class ElementDeclaration(NamedNode):
-  def __init__(self, ownerDocument= None, nodeName= None, content= None):
+  """ Node representing an <!ELEMENT> declaration in document type. Prescribed
+      content is described by 'contentType' and 'elements', which is null for
+      EMPTY and ANY content, or a ContentDeclarationList for Mixed and element
+      content.
+  """
+  [EMPTY_CONTENT, ANY_CONTENT, MIXED_CONTENT, ELEMENT_CONTENT
+  ]= range(1, 5)
+  def __init__(
+    self, ownerDocument= None, nodeName= None,
+    contentType= ANY_CONTENT, elements= None
+  ):
     NamedNode.__init__(self, ownerDocument, nodeName)
-    self._content= content
+    self._contentType= contentType
+    self._elements= elements
   def _cloneTo(self, node):
     NamedNode._cloneTo(self, node)
-    node._content= self._content
+    node._contentType= self._contentType
+    node._elements= self._elements
   def _get_nodeType(self):
     return Node.ELEMENT_DECLARATION_NODE
-  def _get_nodeValue(self):
-    return self._content
+  def _get_contentType(self):
+    return self._contentType
+  def _get_elements(self):
+    return self._elements
   def _get_parentNode(self):
     return None
 
-class AttributeDeclarationList(NamedNode):
+
+class ContentDeclarationList(DOMList):
+  """ A list representing part of the content model given in an <!ELEMENT>
+      declaration. Apart from normal DOMList accessors, has flags specifying
+      whether the group is optional, can be included more than once (or both),
+      and whether it's a sequence or a choice. List items are element name
+      strings or, in the case of element content, ContentDeclarationLists. In
+      mixed content the initial #PCDATA is omitted and nesting is not used.
+  """
+  def __init__(self):
+    DOMList.__init__(self)
+    self._isOptional= False
+    self._isMultiple= False
+    self._isSequence= False
+  def _get_isOptional(self):
+    return self._isOptional
+  def _get_isMultiple(self):
+    return self._isMultiple
+  def _get_isSequence(self):
+    return self._isSequence
+  def _set_isOptional(self, value):
+    self._isOptional= value
+  def _set_isMultiple(self, value):
+    self._isMultiple= value
+  def _set_isSequence(self, value):
+    self._isSequence= value
+
+
+class AttributeListDeclaration(NamedNode):
   def __init__(self, ownerDocument= None, nodeName= None):
     NamedNode.__init__(self, ownerDocument, nodeName)
     self._declarations= AttributeDeclarationMap(self)
@@ -2156,6 +2332,7 @@ class AttributeDeclarationList(NamedNode):
     return None
   def _get_declarations(self):
     return self._declarations
+
 
 class AttributeDeclaration(NamedNode):
   """ Node representing the declaration of a single attribute in an attlist.
@@ -2230,6 +2407,7 @@ class DOMConfiguration(DOMObject):
     'datatype-normalization':                    (False, True ),
     'discard-default-content':                   (True,  True ),
     'disallow-doctype':                          (False, True ),
+    'element-content-whitespace':                (True,  True ),
     'entities':                                  (True,  True ),
     'format-pretty-print':                       (False, False),
     'ignore-unknown-character-denormalizations': (True,  False),
@@ -2241,8 +2419,8 @@ class DOMConfiguration(DOMObject):
     'validate':                                  (False, False),
     'validate-if-schema':                        (False, False),
     'well-formed':                               (True,  True ),
-    'whitespace-in-element-content':             (True,  False),
-    'xml-declaration':                           (True,  True )
+    'xml-declaration':                           (True,  True ),
+    'pxdom-assume-element-content':              (False, True )
   }
   def __init__(self):
     DOMObject.__init__(self)
@@ -2262,7 +2440,7 @@ class DOMConfiguration(DOMObject):
     name= string.lower(name)
     if name=='infoset':
       return (
-        self._parameters['whitespace-in-element-content'] and
+        self._parameters['element-content-whitespace'] and
         self._parameters['comments'] and
         self._parameters['namespaces'] and
         not self._parameters['namespace-declarations'] and
@@ -2279,7 +2457,7 @@ class DOMConfiguration(DOMObject):
     name= string.lower(name)
     if name=='infoset':
       if value:
-        self._parameters['whitespace-in-element-content']= True
+        self._parameters['element-content-whitespace']= True
         self._parameters['comments']= True
         self._parameters['namespaces']= True
         self._parameters['namespace-declarations']= False
@@ -2293,6 +2471,9 @@ class DOMConfiguration(DOMObject):
       if not DOMConfiguration._defaults[name][1]:
         raise NotSupportedErr(self, name)
       self._parameters[name]= value
+
+  def _get_parameterNameList(self):
+    return self._parameters.keys()
 
   def _handleError(self, exn):
     handler= self._parameters['error-handler']
@@ -2395,7 +2576,7 @@ class DOMInput(DOMObject):
     r= string.replace
     if unicode is None:
       data= self._actualBytes
-      return r(r(r(data,ibmsp,'\n'),'\r\n','\n'),'\r','\n')
+      return r(r(r(data,EBCLS,'\n'),'\r\n','\n'),'\r','\n')
     else:
       try:
         data= unicode(self._actualBytes, actualEncoding)
@@ -2403,7 +2584,7 @@ class DOMInput(DOMObject):
         raise DOMErrorUnsupportedEncoding(None)
       if data[:1]==unichr(0xFEFF):
         data= data[1:]
-      return r(r(r(r(data,ibmsp,'\n'),'\r\n','\n'),'\r','\n'),unisp,'\n')
+      return r(r(r(r(data,EBCLS,'\n'),'\r\n','\n'),'\r','\n'),UNILS,'\n')
 
 class NodeFilter(DOMObject):
   [SHOW_ELEMENT,SHOW_ATTRIBUTE,SHOW_TEXT,SHOW_CDATA_SECTION,
@@ -2526,8 +2707,17 @@ class DOMParser(DOMObject):
     if not self._config.getParameter('entities'):
       if document.doctype is not None:
         document.doctype._entities= EntityMap(document.doctype)
-    if not self._config.getParameter('namespace-declarations'):
-      document.normalize(text= False, unnsattr= True)
+    unnsattr= not self._config.getParameter('namespace-declarations')
+    unws= not self._config.getParameter('element-content-whitespace')
+    if unnsattr or unws:
+      if unws:
+        assume= document.config.getParameter('pxdom-assume-element-content')
+        document.config.setParameter('pxdom-assume-element-content',
+          self._config.getParameter('pxdom-assume-element-content')
+        )
+      document.normalize(text= False, unnsattr= unnsattr, unws= unws)
+      if unws:
+        document.config.setParameter('pxdom-assume-element-content', assume)
     return document
   def parseWithContext(self, input, cnode, action):
     try:
@@ -2582,9 +2772,19 @@ class DOMParser(DOMObject):
         results.append(previousSubling)
     if self._index<len(self._data):
       self._e('Expected end of input')
-    if not self._config.getParameter('namespace-declarations'):
+    unnsattr= not self._config.getParameter('namespace-declarations')
+    unws= not self._config.getParameter('element-content-whitespace')
+    if unnsattr or unws:
+      if unws:
+        document= cnode.ownerDocument
+        assume= document.config.getParameter('pxdom-assume-element-content')
+        document.config.setParameter('pxdom-assume-element-content',
+          self._config.getParameter('pxdom-assume-element-content')
+        )
       for result in results:
-        result.normalize(text= False, unnsattr= True)
+        result.normalize(text= False, unnsattr= unnsattr, unws= unws)
+      if unws:
+        document.config.setParameter('pxdom-assume-element-content', assume)
     if len(results)==0:
       return None
     return results[0]
@@ -2674,6 +2874,37 @@ class DOMParser(DOMObject):
     if not self._next(')'):
       self._e('Expected \')\' to end enum list')
     return names
+  def _p_eldec(self, isMixed):
+    elements= ContentDeclarationList()
+    elements.isSequence= None
+    while True:
+      self._p_s(False)
+      if self._next('('):
+        if isMixed:
+          self._e('Mixed content declarations cannot contain nested sections')
+        elements._append(self._p_eldec(False))
+      else:
+        elements._append(self._p_name())
+      self._p_s(False)
+      if self._next(')'):
+        break
+      if self._next('|'):
+        sequence= False
+      elif self._next('|'):
+        sequence= True
+      else:
+        self._e('Expected \'|\' or \',\' to continue declaration list')
+      if elements.isSequence not in (None, sequence):
+        self._e('Content declaration list cannot be both choice and sequence')
+      elements.isSequence= sequence
+    if self._next('*'):
+      elements.isOptional= True
+      elements.isMultiple= True
+    elif self._next('+'):
+      elements.isMultiple= True
+    elif self._next('?'):
+      elements.isOptional= True
+    return elements
 
   def _flushText(self, parentNode, refChild):
     if self._textQueue=='':
@@ -2856,7 +3087,7 @@ class DOMParser(DOMObject):
   def _parseAttributeValue(self, parentNode, refChild):
     quote= self._p_q()
     while True:
-      index= self._find(quote+'&')
+      index= self._find(quote+'&<')
       if index>self._index:
         self._textQueue= self._textQueue+string.replace(
           string.replace(self._data[self._index:index], '\t', ' '), '\n', ' '
@@ -2867,6 +3098,8 @@ class DOMParser(DOMObject):
           self._parseCharacterReference(parentNode, refChild)
         else:
           self._parseEntityReference(parentNode, refChild, replaceWhite= True)
+      elif self._next('<'):
+        self._e('Attribute value may not contain \'<\'')
       else:
         break
     if not self._next(quote):
@@ -3040,7 +3273,7 @@ class DOMParser(DOMObject):
             elif self._next('ELEMENT'):
               self._parseElementDeclaration(doctype)
             elif self._next('ATTLIST'):
-              self._parseAttributeDeclarationList(doctype)
+              self._parseAttributeListDeclaration(doctype)
             else:
               self._e('Expected markup declaration')
           else:
@@ -3156,28 +3389,48 @@ class DOMParser(DOMObject):
     self._p_s()
     name= self._p_name()
     self._p_s()
-    index= string.find(self._data, '>', self._index)
-    if index==-1:
-      self._e('Unclosed declaration, no following \'>\'')
-    content= self._data[self._index:index]
-    self._index= index+1
-    while len(content)>0 and content[-1] in ' \t\n':
-      content= content[:-1]
+    if self._next('EMPTY'):
+      contentType= ElementDeclaration.EMPTY_CONTENT
+      elements= None
+    elif self._next('ANY'):
+      contentType= ElementDeclaration.ANY_CONTENT
+      elements= None
+    elif self._next('('):
+      self._p_s(False)
+      if self._next('#PCDATA'):
+        contentType= ElementDeclaration.MIXED_CONTENT
+        self._p_s()
+        if self._next('|'):
+          elements= self._p_eldec(True)
+          if elements.isOptional or not elements.isMultiple:
+            self._e('Mixed content group must end with \'*\'')
+        elif self._next(')'):
+          elements= ContentDeclarationList()
+        else:
+          self._e('Expected \'|\' or end of list')
+      else:
+        contentType= ElementDeclaration.ELEMENT_CONTENT
+        elements= self._p_eldec(False)
+    else:
+      self._e('Expected content declaration')
+    self._p_s(False)
+    if not self._next('>'):
+      self._e('Expected declaration-ending \'>\'')
     if self._processInternalSubset:
       if doctype.elements.getNamedItem(name) is None:
-        element= doctype.createElementDeclaration(name, content)
+        element= doctype.createElementDeclaration(name, contentType, elements)
         doctype.elements.setNamedItem(element)
-  def _parseAttributeDeclarationList(self, doctype):
+  def _parseAttributeListDeclaration(self, doctype):
     self._p_s()
     name= self._p_name()
     self._p_s()
     if self._processInternalSubset:
       attlist= doctype.attlists.getNamedItem(name)
       if attlist is None:
-        attlist= doctype.createAttributeDeclarationList(name)
+        attlist= doctype.createAttributeListDeclaration(name)
         doctype.attlists.setNamedItem(attlist)
     else:
-      attlist= doctype.createAttributeDeclarationList(name)
+      attlist= doctype.createAttributeListDeclaration(name)
     while not self._next('>'):
       name= self._p_name()
       self._p_s()
@@ -3236,6 +3489,8 @@ class DOMParser(DOMObject):
     )
 
 
+# DOM Save serialisation
+#
 class DOMOutput(DOMObject):
   def __init__(self):
     DOMObject.__init__(self)
@@ -3315,11 +3570,16 @@ class DOMSerializer(DOMObject):
     destination.systemId= uri
     self.write(destination, node)
 
-def parse(fileorpath):
+
+# Convenience functions
+#
+def parse(fileorpath, parameters= {}):
   """ Convenience minidom-style method to return a document from a file parsed
       with default options.
   """
   parser= DOMParser()
+  for (key, value) in parameters.items():
+    parser.config.setParameter(key, value)
   src= _implementation.createDOMInput()
   if hasattr(fileorpath, 'read'):
     src.byteStream= fileorpath
@@ -3331,11 +3591,13 @@ def parse(fileorpath):
     src.byteStream.close()
   return doc
 
-def parseString(content):
+def parseString(content, parameters= {}):
   """ Convenience minidom-style method to return a document from a string
       parsed with default options. (BaseURI won't work in this case.)
   """
   parser= DOMParser()
+  for (key, value) in parameters.items():
+    parser.config.setParameter(key, value)
   src= _implementation.createDOMInput()
   src.stringData= content
   doc= parser.parse(src)
@@ -3353,7 +3615,7 @@ class DOMException(Exception):
   ]= range(1, 18)
   def _get_code(self):
     return self.code
-  
+
 class IndexSizeErr(DOMException):
   def __init__(self, data, index):
     DOMException.__init__(self)
@@ -3529,24 +3791,3 @@ class ParseError(DOMErrorException):
     return 'XML parsing error: %s, around line %s, char %s:\n%s%s\n%s^' % (
       self._message, line, column, pre, post, ' '*len(pre)
     )
-
-class DOMLocator(DOMObject):
-  def __init__(self, node= None, lineNumber= -1, columnNumber= -1):
-    self._relatedNode= node
-    self._lineNumber= lineNumber
-    self._columnNumber= columnNumber
-    self._offset= -1
-    if node is None:
-      self._uri= ''
-    else:
-      self._uri= node._ownerDocument.documentURI
-  def _get_lineNumber(self):
-    return self._lineNumber
-  def _get_columnNumber(self):
-    return self._columnNumber
-  def _get_offset(self):
-    return self._offset
-  def _get_relatedNode(self):
-    return self._relatedNode
-  def _get_uri(self):
-    return self._uri
