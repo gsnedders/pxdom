@@ -1,11 +1,10 @@
 """ pxdom - stand-alone embeddable pure-Python DOM implementation and
-    non-validating parser conforming to DOM Level 3 Core/XML and Load/Save
-    (based on the February 2004 Proposed Recommendations).
+    non-validating parser conforming to DOM Level 3 Core/XML and Load/Save Rec
 """
 
-__version__= 1,0
+__version__= 1,1
 __author__ = 'Andrew Clover <and@doxdesk.com>'
-__date__   = '13 February 2004'
+__date__   = '27 June 2004'
 __all__    = [
   'getDOMImplementation', 'getDOMImplementations', 'parse', 'parseString'
 ]
@@ -45,16 +44,21 @@ try:
   unicode
 except NameError:
   globals()['unicode']= None
-  unicodedata= None
-  nativeEncoding= 'utf-8'
+  NATIVECHARSET= 'utf-8'
 else:
   import unicodedata
   if getattr(sys, 'maxunicode', 0)>0xFFFF:
-    nativeEncoding= 'utf-32'
+    NATIVECHARSET= 'utf-32'
   else:
-    nativeEncoding= 'utf-16'
+    NATIVECHARSET= 'utf-16'
+  import codecs
 
-# Extra line separator chars for XML 1.1
+XMLTYPES= [
+  'text/xml', 'application/xml', 'application/xml-dtd', 'text/xsl'
+  'text/xml-external-parsed-entity','application/xml-external-parsed-entity'
+]
+
+# Character classes, including extra line separator chars for XML 1.1
 #
 if unicode is not None:
   EBCLS= unichr(0x85)
@@ -62,6 +66,23 @@ if unicode is not None:
 else:
   EBCLS= chr(0x85)
   UNILS= ''
+WHITE= ' \t\n\r'+EBCLS+UNILS
+NOTTEXT= (
+  '\x00\x01\x02\x03\x04\x05\x06\x07\x08\x0B\x0C\x0E\x0F'
+  '\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x20\x7F'
+)
+if unicode is not None:
+  NOTTEXT= NOTTEXT+string.join(map(unichr,
+    range(127,133)+range(134, 160)+[0xFFFE, 0xFFFF]
+  ), '')
+NOTNAME= NOTTEXT+WHITE+'!"#$%&\'()*+,/;<=>?@[\\]^`{|}~'
+NOTFIRST= '.-0123456789'
+NOTURI= (
+  string.join(map(chr, range(0, 33)), '')+'<>"{}\^`'+
+  string.join(map(chr, range(127, 256)), '')
+)
+DEC= '0123456789'
+HEX= '0123456789abcdefABDCDEF'
 
 
 # Unicode character normalisation (>=2.3). Also includes a kludge for
@@ -76,10 +97,6 @@ if unicode is not None:
       0x09BE, 0x09D7, 0x0B3E, 0x0B56, 0x0B57, 0x0BBE, 0x0BD7, 0x0CC2, 0x0CD5,
       0x0CD6, 0x0D3E, 0x0D57, 0x0DCF, 0x0DDF, 0x0FB5, 0x0FB7, 0x102E
     ] + range(0x1161, 0x1176) + range(0x11A8, 0x11C2) ), '')
-def _identity(x, y= None):
-  """ Null character normalisation function, doesn't do anything.
-  """
-  return x
 
 def dictadd(a, b):
   ab= a.copy()
@@ -91,6 +108,7 @@ def dictadd(a, b):
 XMNS= 'http://www.w3.org/XML/1998/namespace'
 NSNS= 'http://www.w3.org/2000/xmlns/'
 DTNS= 'http://www.w3.org/TR/REC-xml'
+FIXEDNS= {'xmlns': NSNS, 'xml': XMNS}
 
 class _NONS:
   """ Singleton value type used internally as a value for namespaceURI
@@ -103,22 +121,16 @@ class _NONS:
 NONS= _NONS()
 
 
-# Name token utilities
-#
-_NOTTEXT= string.join(map(chr, range(32)), '')
-_NOTNAME= _NOTTEXT+' !"#$%&\'()*+,/;<=>?@[\\]^`{|}~\x7F'
-_NOTFIRST= _NOTNAME+'.-0123456789'
-
 def _checkName(name, nc= False):
   """ Check name string, raise exception if not well-formed. Optionally check
       it also matches NCName (no colons).
   """
   if name=='':
     raise InvalidCharacterErr(name, '')
-  if name[0] in _NOTFIRST:
+  if name[0] in NOTFIRST:
     raise InvalidCharacterErr(name, name[0])
-  for char in name[1:]:
-    if char in _NOTNAME:
+  for char in name:
+    if char in NOTNAME:
       raise InvalidCharacterErr(name, char)
   if nc and ':' in name:
       raise NamespaceErr(name, None)
@@ -129,11 +141,27 @@ def _splitName(name):
       is not a valid qualified name.
   """
   parts= string.split(name, ':', 2)
-  if len(parts)==2 and '' not in parts:
-    return tuple(parts)
-  if len(parts)==1:
-    return (None, name)
+  if '' not in parts:
+    if len(parts)==2:
+      return tuple(parts)
+    if len(parts)==1:
+      return (None, name)
   return (None, None)
+
+def _encodeURI(s):
+  """ Utility function to turn a string from a SYSTEM ID or xml:base attribute
+      into a URI string, with disallowed characters %-encoded.
+  """
+  if unicode is not None:
+    if not isinstance(s, type('')):
+      s= s.encode('utf-8')
+  uri= ''
+  for c in s:
+    if c in NOTURI:
+      uri= uri+'%%%02X'%ord(c)
+    else:
+      uri= uri+c
+  return uri
 
 
 class DOMObject:
@@ -306,7 +334,7 @@ class NodeListByTagName(NodeList):
           self._namespaceURI=='*' and
           self._localName==childNode.localName
         ) or (
-          self._namespaceURI==NONS and
+          self._namespaceURI is NONS and
           self._localName==childNode.nodeName
         ) or (
           self._namespaceURI==childNode.namespaceURI and
@@ -323,14 +351,14 @@ class NamedNodeMap(NodeList):
   """
   def __init__(self, ownerNode, childType):
     NodeList.__init__(self, ownerNode)
-    self._childType= childType
+    self._childTypes= [childType]
 
   def getNamedItemNS(self, namespaceURI, localName):
     if namespaceURI=='':
       namespaceURI= None
     for node in self._list:
       if (
-        (namespaceURI==NONS and localName==node.nodeName) or
+        (namespaceURI is NONS and localName==node.nodeName) or
         (namespaceURI==node.namespaceURI and localName==node.localName)
       ):
         return node
@@ -368,7 +396,7 @@ class NamedNodeMap(NodeList):
     if self._readonly:
       raise NoModificationAllowedErr(self, 'namedItem')
     if newItem is not None:
-      if newItem.nodeType!=self._childType:
+      if newItem.nodeType not in self._childTypes:
         raise HierarchyRequestErr(newItem, self)
       if newItem.ownerDocument is not self._ownerNode.ownerDocument:
         raise WrongDocumentErr(self._ownerNode.ownerDocument, newItem)
@@ -586,7 +614,12 @@ class DOMConfiguration(DOMObject):
     'xml-declaration':                           (True,  True ),
     # Non-standard extensions
     'pxdom-assume-element-content':              (False, True ),
-    'pxdom-resolve-resources':                   (False, False)
+    'pxdom-resolve-resources':                   (True, True),
+    # Switches to turn off normally-required normalizeDocument operations
+    'pxdom-normalize-text':                      (True, True),
+    'pxdom-update-entities':                     (True, True),
+    'pxdom-bind-entity-namespaces':              (True, True),
+    'pxdom-examine-cdata-sections':              (True,  True )
   }
 
   _complexparameters= {
@@ -662,7 +695,7 @@ class DOMConfiguration(DOMObject):
   # Convenience method to do character normalization and/or check character
   # normalization on a string, depending on the parameters set on the config
   #
-  def _cnorm(self, text, node):
+  def _cnorm(self, text, node, isParse= False):
     nc= self._parameters['normalize-characters']
     cn= self._parameters['check-character-normalization']
     if not nc and not cn or text=='' or isinstance(text, type('')):
@@ -673,30 +706,52 @@ class DOMConfiguration(DOMObject):
     if (not nc and text!=normal or cn and
       (unicodedata.combining(text[0])!=0 or text[0] in EXTRACOMPOSERS)
     ):
-      self._handleError(DOMErrorCheckCharacterNormalizationFailure(node))
+      self._handleError(CheckNormErr(node, isParse))
     return text
 
   # Convenience method for pxdom to callback the error-handler if one is set
   # on the DOMConfiguration, and raise an exception if the error or handler
   # says processing should not continue.
   #
-  def _handleError(self, exn):
+  def _handleError(self, error):
     handler= self._parameters['error-handler']
     cont= None
     if handler is not None:
-      error= DOMError(exn.severity, str(exn), exn.type, exn.node)
       cont= handler.handleError(error)
-    if not exn.allowContinue(cont):
-      raise exn
+    if not error.allowContinue(cont):
+      raise error
 
 
-# For some reason, the spec says configs owned by LSParsers can't have
-# well-formed set to False
+# LSParsers can't have well-formed set to False, and default entities and
+# cdata-sections to False instead of True
 #
 class ParserConfiguration(DOMConfiguration):
   _defaults= dictadd(DOMConfiguration._defaults, {
-    'well-formed': (True, False)
+    'well-formed': (True, False),
+    'entities': (False, True),
+    'cdata-sections': (False, True)
   })
+
+
+# Predefined configurations for simple normalisation processes outside of the
+# normalizeDocument method
+#
+DOMCONFIG_NONE= DOMConfiguration()
+DOMCONFIG_NONE.setParameter('well-formed', False)
+DOMCONFIG_NONE.setParameter('namespaces', False)
+DOMCONFIG_NONE.setParameter('pxdom-normalize-text', False)
+DOMCONFIG_NONE.setParameter('pxdom-update-entities', True)
+DOMCONFIG_NONE.setParameter('pxdom-examine-cdata-sections', False)
+
+DOMCONFIG_ENTS= DOMConfiguration(DOMCONFIG_NONE)
+DOMCONFIG_ENTS.setParameter('pxdom-update-entities', True)
+DOMCONFIG_ENTS_BIND= DOMConfiguration(DOMCONFIG_ENTS)
+DOMCONFIG_ENTS_BIND.setParameter('pxdom-bind-entity-namespaces', True)
+DOMCONFIG_TEXT= DOMConfiguration(DOMCONFIG_NONE)
+DOMCONFIG_TEXT.setParameter('pxdom-normalize-text', True)
+if CNORM:
+  DOMCONFIG_TEXT_CANONICAL= DOMConfiguration(DOMCONFIG_TEXT)
+  DOMCONFIG_TEXT_CANONICAL.setParameter('normalize-characters', True)
 
 
 class TypeInfo(DOMObject):
@@ -706,7 +761,7 @@ class TypeInfo(DOMObject):
       internal subset's attlists.
   """
   [DERIVATION_RESTRICTION, DERIVATION_EXTENSION, DERIVATION_UNION,
-  DERIVATION_LIST]= range(1, 5) # not used, but in interface spec
+  DERIVATION_LIST]= map(lambda n: 2**n, range(1, 5))
 
   def __init__(self, ownerNode):
     DOMObject.__init__(self, False)
@@ -717,21 +772,30 @@ class TypeInfo(DOMObject):
     return self._getType()[1]
 
   def _getType(self):
-    if (
-      self._ownerNode.nodeType==Node.ATTRIBUTE_NODE and
-      self._ownerNode.ownerElement is not None and
-      self._ownerNode.ownerDocument is not None and
-      self._ownerNode.ownerDocument.doctype is not None
-    ):
-      tagName= self._ownerNode.ownerElement.tagName
-      attlist= self._ownerNode.ownerDocument.doctype._attlists.getNamedItem(
-        tagName
-      )
-      if attlist is not None:
-        attdecl= attlist.declarations.getNamedItem(self._ownerNode.name)
-        if attdecl is not None:
-          return (DTNS,AttributeDeclaration.ATTR_NAMES[attdecl.attributeType])
+    if self._ownerNode.nodeType==Node.ATTRIBUTE_NODE:
+      if (
+        self._ownerNode.ownerElement is not None and
+        self._ownerNode.ownerDocument is not None and
+        self._ownerNode.ownerDocument.doctype is not None
+      ):
+        attlist= self._ownerNode.ownerDocument.doctype._attlists.getNamedItem(
+          self._ownerNode.ownerElement.tagName
+        )
+        if attlist is not None:
+          attdecl= attlist.declarations.getNamedItem(self._ownerNode.name)
+          if attdecl is not None:
+            return (
+              DTNS, AttributeDeclaration.ATTR_NAMES[attdecl.attributeType]
+            )
+      if (self._ownerNode.name=='xml:id'):
+        return (DTNS, 'ID')
     return (None, None)
+
+  def isDerivedFrom(self, typeNamespaceArg, typeNameArg, derivationMethod):
+    """ pxdom does not support XML Schema; for DTD schema this method always
+        returns false.
+    """
+    return False
 
 
 class DOMLocator(DOMObject):
@@ -901,6 +965,8 @@ class Node(DOMObject):
       raise NotFoundErr(
         self._childNodes, oldChild.namespaceURI, oldChild.localName
       )
+    if oldChild is newChild:
+      return
 
     if newChild is not None:
       if newChild.ownerDocument not in (self._ownerDocument, None):
@@ -959,25 +1025,9 @@ class Node(DOMObject):
     return _implementation.hasFeature(feature, version)
 
   def getFeature(self, feature, version):
-    if implementation.hasFeature(feature, version):
+    if _implementation.hasFeature(feature, version):
       return self
     return None
-
-  def _get_baseURI(self):
-    if self._attributes is not None:
-      base= self._attributes.getNamedItemNS(XMNS, 'base')
-      if base is not None:
-        if urlparse.urlparse(base.value)[0]!='':
-          return base.value
-        if self._containerNode is None:
-          return base.value
-        return urlparse.urljoin(self._containerNode.baseURI, base.value)
-    if self._containerNode is None:
-      return None
-    if self._containerNode.nodeType==Node.DOCUMENT_TYPE_NODE:
-      if self.ownerDocument is not None:
-        return self.ownerDocument.documentURI
-    return self._containerNode.baseURI
 
   def _get_pxdomLocation(self):
     return DOMLocator(self, self._row, self._col)
@@ -1015,9 +1065,9 @@ class NamedNode(Node):
   """ Base class for nodes who have specific names but no namespace
       capability (entity references and so on).
   """
-  def __init__(self, ownerDocument= None, nodeName= None, _strict= True):
+  def __init__(self, ownerDocument= None, nodeName= None):
     Node.__init__(self, ownerDocument, None, None, None)
-    if _strict and nodeName is not None:
+    if nodeName is not None:
       _checkName(nodeName)
     self._nodeName= nodeName
   def _cloneTo(self, node):
@@ -1040,18 +1090,18 @@ class NamedNodeNS(Node):
   ):
     for name in (prefix, localName):
       if name is not None:
-        _checkName(name, nc= namespaceURI!=NONS)
+        _checkName(name, nc= namespaceURI is not NONS)
     Node.__init__(self, ownerDocument, namespaceURI, localName, prefix)
   def _get_nodeName(self):
-    if self._namespaceURI==NONS or self._prefix is None:
+    if self._namespaceURI is NONS or self._prefix is None:
       return self._localName
     return '%s:%s' % (self._prefix, self._localName)
   def _get_localName(self):
-    if self._namespaceURI==NONS:
+    if self._namespaceURI is NONS:
       return None
     return self._localName
   def _get_namespaceURI(self):
-    if self._namespaceURI==NONS:
+    if self._namespaceURI is NONS:
       return None
     return self._namespaceURI
   def _get_schemaTypeInfo(self):
@@ -1064,9 +1114,8 @@ class NamedNodeNS(Node):
       _checkName(value)
     if (':' in value or
       (self._namespaceURI in (None, NONS) and value is not None) or
-      (value=='xml' and self._namespaceURI!=XMNS) or
-      (value=='xmlns' and self._namespaceURI!=NSNS) or
-      (value not in ('xml', 'xmlns') and self._namespaceURI in (XMNS, NSNS))
+      value=='xml' and self._namespaceURI!=XMNS or
+      (value=='xmlns') != (self._namespaceURI==NSNS)
     ):
       raise NamespaceErr((value or '')+':'+self._localName,self._namespaceURI)
     self._prefix= value
@@ -1076,6 +1125,8 @@ class NamedNodeNS(Node):
     prefix, localName= _splitName(qualifiedName)
     if localName is None:
       _checkName(qualifiedName)
+      if namespaceURI is not None:
+        raise NamespaceErr(qualifiedName, namespaceURI)
       self._namespaceURI= NONS
       self._prefix= None
       self._localName= qualifiedName
@@ -1084,9 +1135,9 @@ class NamedNodeNS(Node):
       if prefix is not None:
           _checkName(prefix, nc= True)
       if (
-        (namespaceURI is None and prefix is not None) or
-        (namespaceURI==XMNS)!=(prefix=='xml') or
-        (namespaceURI==NSNS)!=('xmlns' in (prefix, qualifiedName))
+        namespaceURI is None and prefix is not None or
+        prefix=='xml' and namespaceURI!=XMNS or
+        (namespaceURI==NSNS) != ('xmlns' in (prefix, qualifiedName))
       ):
         raise NamespaceErr(qualifiedName, namespaceURI)
       self._namespaceURI= namespaceURI
@@ -1123,8 +1174,8 @@ class Document(Node):
   def _get_ownerDocument(self):
     return None
   _childTypes= [
-    Node.ELEMENT_NODE, Node.COMMENT_NODE, Node.TEXT_NODE,
-    Node.PROCESSING_INSTRUCTION_NODE, Node.DOCUMENT_TYPE_NODE
+    Node.ELEMENT_NODE, Node.COMMENT_NODE, Node.PROCESSING_INSTRUCTION_NODE,
+    Node.DOCUMENT_TYPE_NODE
   ]
 
   def _get_implementation(self):
@@ -1139,8 +1190,6 @@ class Document(Node):
        if child.nodeType==Node.DOCUMENT_TYPE_NODE:
         return child
     return None
-  def _get_baseURI(self):
-    return self._documentURI
   def _get_domConfig(self):
     return self._domConfig
 
@@ -1167,39 +1216,35 @@ class Document(Node):
   def _set_strictErrorChecking(self, value):
     self._strictErrorChecking= value
 
-  def createElement(self, tagName, _default= True):
+  def createElement(self, tagName):
     element= Element(self, NONS, tagName, None)
-    if _default:
-      element._setDefaultAttributes()
+    element._setDefaultAttributes()
     return element
-  def createElementNS(
-    self, namespaceURI, qualifiedName, _strict= True, _default= True
-  ):
+  def createElementNS(self, namespaceURI, qualifiedName):
     if namespaceURI=='':
       namespaceURI= None
     prefix, localName= _splitName(qualifiedName)
     if (
       localName is None or
-      (_strict and namespaceURI is None and prefix is not None) or
-      namespaceURI in (XMNS, NSNS) or prefix in ('xml', 'xmlns')
+      namespaceURI is None and prefix is not None or
+      prefix=='xml' and namespaceURI!=XMNS or
+      (namespaceURI==NSNS) != ('xmlns' in (prefix, qualifiedName))
     ):
       raise NamespaceErr(qualifiedName, namespaceURI)
     element= Element(self, namespaceURI, localName, prefix)
-    if _default:
-      element._setDefaultAttributes()
+    element._setDefaultAttributes()
     return element
   def createAttribute(self, name):
     return Attr(self, NONS, name, None, True)
-  def createAttributeNS(self, namespaceURI, qualifiedName, _strict= True):
+  def createAttributeNS(self, namespaceURI, qualifiedName):
     if namespaceURI=='':
       namespaceURI= None
     prefix, localName= _splitName(qualifiedName)
     if (
       localName is None or
-      (_strict and namespaceURI is None and prefix is not None) or
-      (namespaceURI==XMNS)!=(prefix=='xml') or
-      (namespaceURI==NSNS)!=('xmlns' in (prefix, qualifiedName)) or
-      (prefix=='xmlns' and localName in ('xml', 'xmlns'))
+      namespaceURI is None and prefix is not None or
+      prefix=='xml' and namespaceURI!=XMNS or
+      (namespaceURI==NSNS) != ('xmlns' in (prefix, qualifiedName))
     ):
       raise NamespaceErr(qualifiedName, namespaceURI)
     return Attr(self, namespaceURI, localName, prefix, True)
@@ -1221,9 +1266,9 @@ class Document(Node):
     return node
   def createDocumentFragment(self):
     return DocumentFragment(self)
-  def createEntityReference(self, name, _strict= True):
-    node= EntityReference(self, name, _strict)
-    node._normalize(ents= True)
+  def createEntityReference(self, name):
+    node= EntityReference(self, name)
+    node._normalize(DOMCONFIG_ENTS)
     return node
 
   def getElementsByTagName(self, name):
@@ -1251,7 +1296,7 @@ class Document(Node):
       namespaceURI= None
     if self._readonly:
       raise NoModificationAllowedErr(self, 'renameNode')
-    if n.ownerDocument is not self:
+    if n._ownerDocument is not self:
       raise WrongDocumentErr(n, self)
     n._renameNode(namespaceURI, qualifiedName)
     n._changed()
@@ -1432,11 +1477,9 @@ class Attr(NamedNodeNS):
     self._specified= specified
     self._isId= False
   def _cloneTo(self, node):
-    """ Make a clone of a node. Clones are always specified.
-    """
     NamedNodeNS._cloneTo(self, node)
     node._isId= self._isId
-    node._specified= True
+    node._specified= self._specified
 
   def _get_nodeType(self):
     return Node.ATTRIBUTE_NODE
@@ -1454,8 +1497,8 @@ class Attr(NamedNodeNS):
       return value
     else:
       return string.join(
-        filter(lambda s: s!='', string.split(value, ' ')), ' '
-      )
+        filter(lambda s: s!='', string.split(value, ' ')),
+      ' ')
   def _set_nodeValue(self, value):
     self.value= value
 
@@ -1588,7 +1631,7 @@ class Text(CharacterData):
     # would be invalid, but still well-formed.)
     #
     for c in self._data:
-      if c not in ' \t\n':
+      if c not in WHITE:
         return False
     return True
 
@@ -1636,24 +1679,11 @@ class ProcessingInstruction(NamedNode):
 
 
 class EntityReference(NamedNode):
-  def __init__(self, ownerDocument= None, nodeName= None, _strict= True):
-    NamedNode.__init__(self, ownerDocument, nodeName, _strict)
+  def __init__(self, ownerDocument= None, nodeName= None):
+    NamedNode.__init__(self, ownerDocument, nodeName)
     self.readonly= True
-  def _recurse(self, deep, clone= False, ownerDocument= None, readonly= None):
-    if clone:
-      document= ownerDocument
-      if document is None:
-        document= self._ownerDocument
-      return document.createEntityReference(self.nodeName)
-    return Node._recurse(self, deep, clone, ownerDocument, readonly)
   def _get_nodeType(self):
     return Node.ENTITY_REFERENCE_NODE
-  def _get_baseURI(self):
-    if self.ownerDocument.doctype is not None:
-      decl= self.ownerDocument.doctype.entities.getNamedItem(self.nodeName)
-      if decl is not None:
-        return decl.baseURI
-    return None
 
 
 class DocumentType(NamedNode):
@@ -1673,6 +1703,8 @@ class DocumentType(NamedNode):
     self._notations= NamedNodeMap(self, Node.NOTATION_NODE)
     self._elements= NamedNodeMap(self, Node.ELEMENT_DECLARATION_NODE)
     self._attlists= NamedNodeMap(self, Node.ATTRIBUTE_LIST_NODE)
+    self._parameterEntities= {}
+    self._processed= True
   def _cloneTo(self, node):
     NamedNode._cloneTo(self, node)
     node._publicId= self._publicId
@@ -1697,15 +1729,17 @@ class DocumentType(NamedNode):
     return self._elements
   def _get_pxdomAttlists(self):
     return self._attlists
+  def _get_pxdomProcessed(self):
+    return self._processed
   def _set_internalSubset(self, value):
     self._internalSubset= value
-  def _get_baseURI(self):
-    return None
 
-  def createEntity(self, name, publicId, systemId, notationName):
-    return Entity(self._ownerDocument, name, publicId, systemId, notationName)
-  def createNotation(self, name, publicId, systemId):
-    return Notation(self._ownerDocument, name, publicId, systemId)
+  def createEntity(self, name, publicId, systemId, notationName, baseURI):
+    return Entity(
+      self._ownerDocument, name, publicId, systemId, notationName, baseURI
+    )
+  def createNotation(self, name, publicId, systemId, baseURI):
+    return Notation(self._ownerDocument, name, publicId, systemId, baseURI)
   def createElementDeclaration(self, name, contentType, elements):
     return ElementDeclaration(self._ownerDocument, name, contentType,elements)
   def createAttributeListDeclaration(self, name):
@@ -1721,25 +1755,28 @@ class DocumentType(NamedNode):
 class Entity(NamedNode):
   def __init__(self,
     ownerDocument= None, nodeName= None, publicId= None, systemId= None,
-    notationName= None
+    notationName= None, baseURI= None
   ):
     NamedNode.__init__(self, ownerDocument, nodeName)
     self._publicId= publicId
     self._systemId= systemId
     self._notationName= notationName
+    self._baseURI= baseURI
+    self._available= True
     self._xmlVersion= None
     self._xmlEncoding= None
     self._inputEncoding= None
-    self._available= True
+    self._documentURI= None
   def _cloneTo(self, node):
     NamedNode._cloneTo(self, node)
     node._publicId= self._publicId
     node._systemId= self._systemId
     node._notationName= self._notationName
+    node._available= self._available
     node._xmlVersion= self._xmlVersion
     node._xmlEncoding= self._xmlEncoding
     node._inputEncoding= self._inputEncoding
-    node._available= self._available
+    node._documentURI= self._documentURI
   def _get_nodeType(self):
     return Node.ENTITY_NODE
   def _get_parentNode(self):
@@ -1758,14 +1795,17 @@ class Entity(NamedNode):
     return self._inputEncoding
   def _get_pxdomAvailable(self):
     return self._available
+  def _get_pxdomDocumentURI(self):
+    return self._documentURI
 
 class Notation(NamedNode):
-  def __init__(self,
-    ownerDocument= None, nodeName= None, publicId= None, systemId= None
+  def __init__(self, ownerDocument= None,
+    nodeName= None, publicId= None, systemId= None, baseURI= None
   ):
     NamedNode.__init__(self, ownerDocument, nodeName)
     self._publicId= publicId
     self._systemId= systemId
+    self._baseURI= baseURI
   def _cloneTo(self, node):
     NamedNode._cloneTo(self, node)
     node._publicId= self._publicId
@@ -1902,13 +1942,17 @@ class AttributeDeclaration(NamedNode):
     if localName is None:
       attr= element.ownerDocument.createAttribute(self.nodeName)
     else:
-      if prefix is None:
+      if 'xmlns' in (prefix, self.nodeName):
+        namespaceURI= NSNS
+      elif prefix=='xml':
+        namespaceURI= XMNS
+      elif prefix is None:
         namespaceURI= None
       else:
         namespaceURI= element.lookupNamespaceURI(prefix)
-      attr= element.ownerDocument.createAttributeNS(
-        namespaceURI, self.nodeName, _strict= False
-      )
+      attr=element.ownerDocument.createAttribute(self.nodeName)
+      attr._namespaceURI= namespaceURI
+      attr._prefix, attr._localName= _splitName(self.nodeName)
     for child in self._childNodes:
       attr.appendChild(child.cloneNode(True))
     element.setAttributeNodeNS(attr)
@@ -1923,7 +1967,6 @@ def _Node__cloneNode(self, deep):
   """ Make an identical copy of a node, and optionally its descendants.
   """
   return self._recurse(deep, clone= True)
-
 
 def _Document__adoptNode(self, source):
   """ Take over a node and its descendants from a potentially different
@@ -1954,7 +1997,7 @@ def _Document__adoptNode(self, source):
   if source.nodeType==Node.ATTRIBUTE_NODE:
     source._specified= True
   dest= source._recurse(True, ownerDocument= self)
-  dest._normalize(ents= True)
+  dest._normalize(DOMCONFIG_ENTS)
   return dest
 
 
@@ -2009,10 +2052,23 @@ def _Node___recurse(self,
 def _Attr___recurse(self,
   deep, clone= False, ownerDocument= None, readonly= None
 ):
-  """ Recursive operations on attributes are always 'deep'.
+  """ Recursive operations on attributes are always 'deep'. Operations other
+      than plain clone also make all attributes 'specified'.
   """
-  return Node._recurse(self, True, clone, ownerDocument, readonly)
+  r= Node._recurse(self, True, clone, ownerDocument, readonly)
+  if ownerDocument is not None:
+    r._specified= True
+  return r
 
+def _EntityReference___recurse(self,
+  deep, clone= False, ownerDocument= None, readonly= None
+):
+  if clone:
+    document= ownerDocument
+    if document is None:
+      document= self._ownerDocument
+    return document.createEntityReference(self.nodeName)
+  return Node._recurse(self, deep, clone, ownerDocument, readonly)
 
 def _Node___recurseTo(self, node, clone, ownerDocument, readonly):
   """ Fire off recursive operations to child nodes and attributes. May be
@@ -2042,11 +2098,18 @@ def _DocumentType___recurseTo(self, node, clone, ownerDocument, readonly):
   """ Distribute recursive operations to the nodes in a doctype's extra
       NamedNodeMaps.
   """
-  for nodeMap in ('_entities', '_notations', '_elements', '_attlists'):
-    for namedNode in getattr(self, nodeMap)._list:
+  for mapName in ('_entities', '_notations', '_elements', '_attlists'):
+    selfMap= getattr(self, mapName)
+    nodeMap= getattr(node, mapName)
+    mro= nodeMap._readonly
+    if readonly is not None:
+      mro= readonly
+    nodeMap._readonly= False
+    for namedNode in selfMap._list:
       r= namedNode._recurse(True, clone, ownerDocument, readonly)
       if clone:
-        getattr(node, nodeMap)._append(r)
+        nodeMap._append(r)
+    nodeMap._readonly= mro
 
 def _AttributeListDeclaration____recurseTo(
   self, node, clone, ownerDocument, readonly
@@ -2058,111 +2121,179 @@ def _AttributeListDeclaration____recurseTo(
     if clone:
       node._declarations._append(r)
 
+# XML Base (DOM 3 baseURI)
+# ============================================================================
+
+# Most nodes have null baseURIs. PIs always have the same baseURI as their
+# parents. Document nodes at the top duplicate documentURI.
+#
+def _Node___get_baseURI(self):
+  return None
+def _ProcessingInstruction___get_baseURI(self):
+  return self._getParentURI()
+def  _Document___get_baseURI(self):
+  return self._documentURI
+
+# Check elements for xml:base attributes that might affect the baseURI.
+# Absolute values can be returned directly; relative ones may be affected by
+# baseURI of parent.
+#
+def _Element___get_baseURI(self):
+  base= self._attributes.getNamedItemNS(XMNS, 'base')
+  if base is not None:
+    uri= _encodeURI(base.value)
+    if urlparse.urlparse(uri)[0]!='':
+      return uri
+    return urlparse.urljoin(self._getParentURI(), uri)
+  return self._getParentURI()
+
+# Declaration baseURIs are the URIs of the entity they're defined in, stored
+# in a static internal property.
+#
+def _Entity___get_baseURI(self):
+  return self._baseURI
+def _Notation___get_baseURI(self):
+  return self._baseURI
+
+# Entity references have the same baseURI as their associated definition,
+# regardless of where they are in the document.
+#
+def _EntityReference___get_baseURI(self):
+  document= self._ownerDocument
+  entity= None
+  if document.doctype is not None:
+    entity= document.doctype.entities.getNamedItem(self.nodeName)
+  if entity is not None:
+    return entity._get_baseURI()
+  return None
+
+# Elements and PIs can inherit baseURIs from their parents. Step up the DOM
+# hierarchy to a parent or, if unattached, the Document itself. If the parent
+# is an entity/reference it overrides the parent URI, but with the absolute
+# URI of the document it was read from, which is not the same as its baseURI.
+#
+def _Node___getParentURI(self):
+  parent= self._containerNode
+  document= self._ownerDocument
+  if parent is None:
+    return document.documentURI
+  entity= None
+  if parent.nodeType==Node.ENTITY_NODE:
+    entity= parent
+  elif parent.nodeType==Node.ENTITY_REFERENCE_NODE:
+    if document.doctype is not None:
+      entity= document.doctype.entities.getNamedItem(parent.nodeName)
+  if entity is not None and entity._documentURI is not None:
+    return entity._documentURI
+  return parent.baseURI
+
 
 # DOM 3 namespace inspection
 # ============================================================================
 
-# Recursive namespace lookup backend. For non-Element nodes, just bubble the
-# request up through ancestors.  In prefix lookups, a list of prefixes to
-# ignore (because they are overridden in a descendant element) is passed up.
-#
-def _Node___lookupNamespaceURI(self, prefix):
-  if self._containerNode is not None:
-    return self._containerNode._lookupNamespaceURI(prefix)
-  return None
-
-def _Node___lookupPrefix(self, namespaceURI, exclude):
-  if self._containerNode is not None:
-    return self._containerNode._lookupPrefix(namespaceURI, exclude)
-  return None
-
-
-# Elements may return a value if their attributes match or their own
-# namespaces/prefixes match what's being looked for. The latter behaviour can
-# be turned off for internal purposes, during namespace fixup.
-#
-def _Element___lookupNamespaceURI(self, prefix, ignoreSelf= False):
-  if not ignoreSelf and self.namespaceURI is not None and self.prefix==prefix:
-    return self.namespaceURI
-  localName= prefix
-  if prefix is None:
-    localName= 'xmlns'
-  xmlns= self.attributes.getNamedItemNS(NSNS, localName)
-  if xmlns is not None:
-    return xmlns.value or None
-  return NamedNodeNS._lookupNamespaceURI(self, prefix)
-
-def _Element___lookupPrefix(self, namespaceURI, exclude, ignoreSelf= False):
-  if not ignoreSelf and (
-    self.prefix is not None and self.namespaceURI==namespaceURI
-  ):
-    return self.prefix
-  for attr in self._attributes._list:
-    if attr.prefix=='xmlns' and attr.localName not in exclude:
-      if attr.value==namespaceURI:
-        return attr.localName
-      else:
-        exclude.append(attr.localName)
-  return NamedNodeNS._lookupPrefix(self, namespaceURI, exclude)
-
-
-# If the search goes up to a DocumentType ancestor node, namespaceURI lookup
-# fails, but we have to distinguish this case from going up to a Document and
-# failing because in the case of isDefaultNamespace a different value is (for
-# some reason) returned. Use the NONS singleton as a hack special value.
-#
-def _DocumentType___lookupNamespaceURI(self, prefix):
-  return NONS
-
-
-# Public lookup interface, weeding out the known results we don't need to
-# search for, and dealing with the NONS hack.
+# Public lookup interface
 #
 def _Node__lookupNamespaceURI(self, prefix):
-  if prefix=='xmlns':
-    return NSNS
-  if prefix=='xml':
-    return XMNS
-  localName= prefix
-  namespaceURI= self._lookupNamespaceURI(localName)
-  if namespaceURI==NONS:
-    return None
-  return namespaceURI
+  return self._getNamespaces({}).get(prefix, None)
 
 def _Node__lookupPrefix(self, namespaceURI):
   if namespaceURI in (None, ''):
     return None
-  if namespaceURI==NSNS:
-    return 'xmlns'
-  if namespaceURI==XMNS:
-    return 'xml'
-  return self._lookupPrefix(namespaceURI, [])
+  return self._getNamespaces({}, True).get(namespaceURI, None)
 
 def _Node__isDefaultNamespace(self, namespaceURI):
-  if namespaceURI=='':
-    namespaceURI= None
-  return self._lookupNamespaceURI(None)==namespaceURI
+  return self._getNamespaces({}).get(None, NONS)==namespaceURI
 
 
-# Public lookup on document node redirects to document root element.
+# Public lookup on Document node redirects to document root element
 #
 def _Document__lookupNamespaceURI(self, prefix):
-  root= self.documentElement
-  if root is not None:
-    return root.lookupNamespaceURI(prefix)
-  return None
+  return self.documentElement.lookupNamespaceURI(prefix)
 
 def _Document__lookupPrefix(self, namespaceURI):
-  root= self.documentElement
-  if root is not None:
-    return root.lookupPrefix(namespaceURI)
-  return None
+  return self.documentElement.lookupPrefix(namespaceURI)
 
 def _Document__isDefaultNamespace(self, namespaceURI):
-  root= self.documentElement
-  if root is not None:
-    return root.isDefaultNamespace(namespaceURI)
-  return False
+  return self.documentElement.isDefaultNamespace(namespaceURI)
+
+
+def _Node___getNamespaces(self, store, inverted= False):
+  """ Construct a lookup dictionary of in-scope namespaces.
+  """
+  if self._containerNode is not None:
+    self._containerNode._getNamespaces(store, inverted)
+  return store
+
+def _Element___getNamespaces(self, store, inverted= False, ignoreSelf= False):
+  if self.localName is not None:
+    if not ignoreSelf:
+      key, value= self.prefix, self.namespaceURI
+      if inverted:
+        key, value= value, key
+      if not store.has_key(key):
+        store[key]= value
+    for attr in self.attributes:
+      if attr.namespaceURI==NSNS:
+        key= [attr.localName, None][attr.prefix is None]
+        value= attr.value or None
+        if inverted:
+          key, value= value, key
+        if not store.has_key(key):
+          store[key]= value
+  return NamedNodeNS._getNamespaces(self, store, inverted)
+
+ 
+# Namespace normalisation
+#
+def _Element___getFixups(self, nsframe):
+  """ For an element with a given in-scope-namespace lookup, return a list of
+      new namespace declaration attributes to add, and a list of prefix
+      changes to existing attributes.
+  """
+  nsframe= nsframe.copy()
+  create, reprefix= [], []
+
+  # Ensure element's prefix maps to element's namespaceURI
+  #
+  if self._namespaceURI not in (NONS, nsframe.get(self.prefix, None)):
+    create.append((self._prefix, self._namespaceURI))
+    nsframe[self._prefix]= self._namespaceURI
+
+  # Fix up each attribute
+  #
+  for attr in self._attributes:
+    if attr._namespaceURI in (NONS, NSNS, XMNS):
+      continue
+    namespaceURI= None
+    if attr._prefix is not None:
+      namespaceURI= nsframe.get(attr._prefix, None)
+
+    # If attribute prefix does not map to its namespace, will need new prefix.
+    # Find one that matches the namespace
+    #
+    if attr._namespaceURI!=namespaceURI:
+      prefix= None
+      if attr._namespaceURI is not None:
+        try:
+          ix= nsframe.values().index(attr._namespaceURI)
+          prefix= nsframe.keys()[ix]
+        except ValueError:
+          prefix= None
+
+        # No match, have to create a new namespace declaration for it. Use
+        # existing prefix if we can, else make up a new arbitrary name
+        #
+        if prefix is None:
+          prefix= attr._prefix
+          nsSuffix= 0
+          while prefix is None or nsframe.has_key(prefix):
+            nsSuffix= nsSuffix+1
+            prefix= 'NS'+str(nsSuffix)
+        create.append((prefix, attr._namespaceURI))
+        nsframe[prefix]= attr._namespaceURI
+
+      reprefix.append((attr, prefix))
+  return create, reprefix
 
 
 # DOM 3 node comparison
@@ -2170,7 +2301,6 @@ def _Document__isDefaultNamespace(self, namespaceURI):
 
 def _Node__isSameNode(self, other):
   return self is other
-
 
 def _Node__isEqualNode(self, other):
   """ Check two nodes have the same properties and content.
@@ -2195,6 +2325,8 @@ def _Node__isEqualNode(self, other):
 
 def _DocumentType__isEqualNode(self, other):
   """ Doctype nodes have additional properties that must match to be equal.
+      The extension attlists and elements maps are not checked for equality as
+      they are not part of the standard.
   """
   if not NamedNode.isEqualNode(self, other):
     return False
@@ -2476,14 +2608,15 @@ def _Text___getLogicallyAdjacentTextNodes(self):
 
 def _Node__normalize(self):
   """ Perform text node concatenation and, if enabled in the domConfig,
-      character normalisation.
+      character normalisation. Hack around the fact that apparently check-
+      character-normalization shouldn't do anything here.
   """
   if self._readonly:
     raise NoModificationAllowedErr(self, 'normalize')
-  self._normalize(
-    True, False, False, False, False, False, False, False, False, False,
-    False, False, False, self._ownerDocument.domConfig._cnorm
-  )
+  if self._ownerDocument.domConfig.getParameter('normalize-characters'):
+    self._normalize(DOMCONFIG_TEXT_CANONICAL)
+  else:
+    self._normalize(DOMCONFIG_TEXT)
   self._changed()
 
 
@@ -2497,78 +2630,57 @@ def _Document__normalizeDocument(self):
   if self._readonly:
     return
 
-  # Read normalisation-relevant parameters from the configuration.
-  #
-  unws= not self._domConfig.getParameter('element-content-whitespace')
-  uncdata= not self._domConfig.getParameter('cdata-sections')
-  uncomment= not self._domConfig.getParameter('comments')
-  unent= not self._domConfig.getParameter('entities')
-  unns= not self._domConfig.getParameter('namespaces')
-  unnsattr= not self._domConfig.getParameter('namespace-declarations')
-  wf= self._domConfig.getParameter('well-formed')
-  cf= self._domConfig.getParameter('canonical-form')
-
-  # In canonical-form mode, try to put exactly one newline character between
-  # each root-level node, removing other whitespace.
-  #
-  if cf:
-    needws= self._domConfig.getParameter('xml-declaration')
-    for child in self.childNodes._list[:]:
-      if child.nodeType in (Node.TEXT_NODE, Node.DOCUMENT_TYPE_NODE):
-        self.removeChild(child)
-        continue
-      if needws:
-        self.insertBefore(self.createTextNode('\n'), child)
-
   # Recursively normalise the document. Throw away DOMErrors, this method does
   # not return them other than to the error-handler.
   #
   try:
-    self._normalize(
-      True, True, True, True, True, unws, unnsattr, unns, uncdata,
-      uncomment, unent, wf, cf, self.domConfig._cnorm
-    )
-  except DOMErrorException:
+    self._normalize(self.domConfig)
+  except DOMException:
     pass
+
+  # In canonical-form mode, chuck away the doctype at the end
+  #
+  if self.domConfig.getParameter('canonical-form'):
+    if self.doctype is not None:
+      self.removeChild(self.doctype)
   self._changed()
 
 
-def _Node___normalize(self, text= False,
-  atts= False, ents= False, ns= False, cdata= False, unws= False,
-  unnsattr= False, unns= False, uncdata= False, uncomment= False,
-  unent= False, wf= False, cf= False, cnorm= _identity
-):
+def _Node___normalize(self, config, entnest= ()):
   """ Normalisation back-end. Perform a number of different normalisations on
       child nodes, in the appropriate order.
   """
+  p= config.getParameter
 
-  # If necessary, replace entities with their contents before doing the rest.
+  # If necessary, replace bound available entities with their contents before
+  # doing the rest.
   #
-  if unent:
+  if not p('entities'):
     for child in self._childNodes._list[:]:
       if child.nodeType==Node.ENTITY_REFERENCE_NODE:
-        for grandchild in child.childNodes:
-          grandchild= grandchild._recurse(True, clone= True, readonly= False)
-          self.insertBefore(grandchild, child)
-        self.removeChild(child)
+        doctype= self._ownerDocument.doctype
+        if doctype is not None:
+          entity= doctype.entities.getNamedItem(child.nodeName)
+          if entity is not None and entity.pxdomAvailable:
+            for grandchild in child.childNodes:
+              grandchild= grandchild._recurse(True,clone=True,readonly=False)
+              self.insertBefore(grandchild, child)
+            self.removeChild(child)
 
   # Next pass, normalise children.
   #
   for child in self._childNodes._list[:]:
-    child._normalize(
-      text, atts, ents, ns, cdata, unws, unnsattr, unns, uncdata,
-      uncomment, unent, wf, cf, cnorm
-    )
+    child._normalize(config, entnest)
 
     # Remove comments if unwanted
     #
-    if uncomment and child.nodeType==Node.COMMENT_NODE:
+    if child.nodeType==Node.COMMENT_NODE and not p('comments'):
       self.removeChild(child)
       continue
 
     # If unwanted, change CDATA sections to text nodes
     #
-    if uncdata and child.nodeType==Node.CDATA_SECTION_NODE:
+    if child.nodeType==Node.CDATA_SECTION_NODE and not p('cdata-sections'):
       newChild= self.ownerDocument.createTextNode(child.data)
       self.replaceChild(newChild, child)
       child= newChild
@@ -2576,236 +2688,164 @@ def _Node___normalize(self, text= False,
     # Concatenate adjacent text nodes, remove ignorable whitespace
     #
     if child.nodeType==Node.TEXT_NODE:
-      if (text and child.data=='' or
-        (unws and child.isElementContentWhitespace)
+      if (
+        p('pxdom-normalize-text') and child.data=='' or not
+        p('element-content-whitespace') and child.isElementContentWhitespace
       ):
         self.removeChild(child)
         continue
-      elif text:
+      elif p('pxdom-normalize-text'):
         previous= child.previousSibling
         if previous is not None and previous.nodeType==Node.TEXT_NODE:
-          previous.data= cnorm(previous.data+child.data, child)
+          previous.data= config._cnorm(previous.data+child.data, child)
           self.removeChild(child)
 
     # Split CDATA sections including string ']]>'
     #
-    if child.nodeType==Node.CDATA_SECTION_NODE:
-      if string.find(child.data, ']]>')!=-1:
-        config= self._ownerDocument.domConfig
-        if not config.getParameter('split-cdata-sections'):
-          config._handleError(DOMErrorInvalidChar(child))
-        else:
-          datas= string.split(child.data, ']]>')
-          child.data= datas[0]
-          refChild= child.nextSibling
-          for data in datas[1:]:
-            newChild= self._ownerDocument.createTextNode(']]>')
-            self.insertBefore(newChild, refChild)
-            newChild=self._ownerDocument.createCDATASection(cnorm(data,child))
-            self.insertBefore(newChild, refChild)
-          config._handleError(DOMErrorCdataSectionSplitted(child))
+    if (
+      child.nodeType==Node.CDATA_SECTION_NODE
+      and p('pxdom-examine-cdata-sections')
+      and string.find(child.data, ']]>')!=-1
+    ):
+      if not config.getParameter('split-cdata-sections'):
+        config._handleError(InvalidCharErr(child))
+      else:
+        datas= string.split(child.data, ']]>')
+        child.data= datas[0]+']]'
+        refChild= child.nextSibling
+        for data in datas[1:-1]:
+          newChild= self._ownerDocument.createCDATASection('>'+data+']]')
+          self.insertBefore(newChild, refChild)
+        newChild= self._ownerDocument.createCDATASection('>'+datas[-1])
+        self.insertBefore(newChild, refChild)
+        config._handleError(CdataSectionsSplittedErr(child))
 
   # Some forms of normalisation might require NodeListByTagNames recalculated.
   # Don't bother bounce up to parents as with the normal _changed() method, as
-  # they will already know.
+  # they will already know about the normalization, but make sure our own
+  # change is updated.
   #
   self._sequence= self._sequence+1
 
 
-def _NamedNode___normalize(self, text= False,
-  atts= False, ents= False, ns= False, cdata= False, unws= False,
-  unnsattr= False, unns= False, uncdata= False, uncomment= False,
-  unent= False, wf= False, cf= False, cnorm= _identity
-):
-  """ Normalisations required by namespace-aware nodes. Additionally to
+def _NamedNode___normalize(self, config, entnest= ()):
+  """ Normalisations required by nodes with name values. Additionally to
       general node normalisations, character-normalise the node name. This
       could theoretically lead to two nodes of the same name in a
       NamedNodeMap; the DOM spec doesn't seem to say what to do in this
       situation, so for the moment we let it be.
   """
-  self._nodeName= cnorm(self._nodeName, self)
-  Node._normalize(
-    self, text, atts, ents, ns, cdata, unws, unnsattr, unns, uncdata,
-    uncomment, unent, wf, cf, cnorm
-  )
+  self._nodeName= config._cnorm(self._nodeName, self)
+  Node._normalize(self, config, entnest)
 
 
-def _NamedNodeNS___normalize(self, text= False,
-  atts= False, ents= False, ns= False, cdata= False, unws= False,
-  unnsattr= False, unns= False, uncdata= False, uncomment= False,
-  unent= False, wf= False, cf= False, cnorm= _identity
-):
-  """ Normalisations required by namespace-aware nodes. Additionally to
-      general node normalisations, try to fix up our namespace if it is
-      possibly unbound in an entity but bound in the entity reference,
-      and character-normalise name parts.
+def _NamedNodeNS___normalize(self, config, entnest= ()):
+  """ Additional normalisations required by namespace-aware nodes.
   """
-  if ents:
-    if self._prefix is not None and self._namespaceURI is None:
-      self._namespaceURI= self._lookupNamespaceURI(self._prefix)
-  self._localName= cnorm(self._localName, self)
+  # Character-normalise name parts.
+  #
+  self._localName= config._cnorm(self._localName, self)
   if self._prefix is not None:
-    self._prefix= cnorm(self._prefix, self)
-  Node._normalize(
-    self, text, atts, ents, ns, cdata, unws, unnsattr, unns, uncdata,
-    uncomment, unent, wf, cf, cnorm
-  )
+    self._prefix= config._cnorm(self._prefix, self)
+
+  # Generate a warning (but with ERROR severity due to spec) if Level 1 nodes
+  # are encountered.
+  #
+  if config.getParameter('namespaces') and self._namespaceURI is NONS:
+    config._handleError(Level1NodeErr(self))
+
+  Node._normalize(self, config, entnest)
+
+  # If we're in an entity reference and have a null namespace (that might be
+  # unbound) see if we've inherited an in-scope namespace from outside that
+  # might bind it up
+  #
+  if config.getParameter('pxdom-bind-entity-namespaces'):
+    if self._namespaceURI is None and self._containerNode is not None:
+      self._namespaceURI= self._containerNode._getNamespaces(
+        {}
+      ).get(self._prefix, None)
 
 
-def _Element___normalize(self, text= False,
-  atts= False, ents= False, ns= False, cdata= False, unws= False,
-  unnsattr= False, unns= False, uncdata= False, uncomment= False,
-  unent= False, wf= False, cf= False, cnorm= _identity
-):
+def _Element___normalize(self, config, entnest= ()):
   """ Normalisations required by elements. Additionally to general named node
       normalisations, may need to add namespace declarations make it
       namespace-well-formed, and normalise or remove some attributes.
   """
-  NamedNodeNS._normalize(
-    self, text, atts, ents, ns, cdata, unws, unnsattr, unns, uncdata,
-    uncomment, unent, wf, cf, cnorm
-  )
-
-  # Fixup element namespace
+  # Normalise element and each attribute name, reordered if in canonical-form
+  # mode
   #
-  if ns and self._namespaceURI!=NONS:
-    if self._lookupNamespaceURI(self._prefix, True)!=self._namespaceURI:
-      if self._prefix is None:
-        if self._namespaceURI is None:
-          self.setAttributeNS(NSNS, 'xmlns', '')
-        else:
-          self.setAttributeNS(NSNS, 'xmlns', self._namespaceURI)
-      elif self._namespaceURI is not None:
-        self.setAttributeNS(NSNS, 'xmlns:'+self._prefix, self._namespaceURI)
-
-  # Normalise each attribute, reordered if in canonical-form mode.
-  #
-  for attr in list(self._attributes._list):
-    attr._normalize(
-      text, atts, ents, ns, cdata, unws, unnsattr, unns, uncdata,
-      uncomment, unent, wf, cf, cnorm
-    )
-  if cf:
+  NamedNodeNS._normalize(self, config, entnest= ())
+  for attr in self._attributes:
+    attr._normalize(config, entnest)
+  if config.getParameter('canonical-form'):
     self._attributes._list.sort(_canonicalAttrSort)
-  for attr in list(self._attributes._list):
 
-    # Work out whether to remove it. An attribute may be removed if it is
-    # a namespace declaration and is redundant in canonical-form mode or
-    # declarations are disabled entirely.
-    #
-    u= False
-    if attr.namespaceURI==NSNS:
-      u= unnsattr
-      if cf and not u:
-        prefix= [attr.localName, None][attr.prefix is None]
-        value= None
-        if self.parentNode is not None:
-          value= self.parentNode._lookupNamespaceURI(prefix)
-        if attr.value==(value or ''):
-          u= True
-    if u:
-      self.removeAttributeNode(attr, None)
-
-
-def _Attr___normalize(self, text= False,
-  atts= False, ents= False, ns= False, cdata= False, unws= False,
-  unnsattr= False, unns= False, uncdata= False, uncomment= False,
-  unent= False, wf= False, cf= False, cnorm= _identity
-):
-  """ Normalisations required by attribute nodes. In addition to general named
-      node normalisations, may add namespace declarations for fixup.
-  """
-  NamedNodeNS._normalize(
-    self, text, atts, ents, ns, cdata, unws, unnsattr, unns, uncdata,
-    uncomment, unent, wf, cf, cnorm
-  )
-
-  # Fixup attribute namespace, adding new declarations to the parent if
-  # we need to add a new namespace to do so
+  # Fix element, attributes namespaces in place
   #
-  if ns and self._containerNode is not None and (
-    self._namespaceURI not in (NONS, NSNS, XMNS)
-  ):
-    if self._prefix is None:
-      prefixNamespace= None
-    else:
-      prefixNamespace=self._containerNode._lookupNamespaceURI(self._prefix,True)
-    if prefixNamespace!=self._namespaceURI:
-      if not self._specified:
-        self._namespaceURI= prefixNamespace
-      elif self._namespaceURI is None:
-        self._prefix= None
-      else:
-        prefix= self._containerNode._lookupPrefix(self._namespaceURI,[], True)
-        if prefix is None:
-          if self._prefix is not None and prefixNamespace is None:
-            prefix= self._prefix
-          else:
-            nsSuffix= 1
-            while True:
-              prefix= 'NS'+str(nsSuffix)
-              if self._containerNode._lookupNamespaceURI(prefix,True) is None:
-                break
-              nsSuffix= nsSuffix+1
-          self._containerNode.setAttributeNS(
-            NSNS, 'xmlns:'+prefix, self._namespaceURI
-          )
-        self._prefix= prefix
+  if config.getParameter('namespaces'):
+    create, reprefix= self._getFixups(
+      self._getNamespaces(FIXEDNS.copy(), ignoreSelf= True)
+    )
+    for prefix, namespaceURI in create:
+      name= 'xmlns'
+      if prefix is not None:
+        name= name+':'+prefix
+      self.setAttributeNS(NSNS, name, namespaceURI or '')
+    for attr, prefix in reprefix:
+      attr._prefix= prefix
+
+  # Remove any namespace declarations that are redundant in canonical-form
+  # mode, or all of them if namespace-declarations is off
+  #
+  if config.getParameter('canonical-form'):
+    nsframe= {}
+    if self._containerNode is not None:
+      nsframe= self._containerNode._getNamespaces({})
+  for attr in self.attributes._list[:]:
+    if attr.namespaceURI==NSNS:
+      if not config.getParameter('namespace-declarations'):
+        self.removeAttributeNode(attr)
+      elif config.getParameter('canonical-form'):
+        prefix= [attr.localName, None][attr.prefix is None]
+        namespaceURI= nsframe.get(prefix, None) or ''
+        if attr.value==namespaceURI:
+          self.removeAttributeNode(attr)
 
 
-def _CharacterData___normalize(self, text= False,
-  atts= False, ents= False, ns= False, cdata= False, unws= False,
-  unnsattr= False, unns= False, uncdata= False, uncomment= False,
-  unent= False, wf= False, cf= False, cnorm= _identity
-):
-  """ Normalisations for text-based nodes. Only need to normalise characters.
+def _CharacterData___normalize(self, config, entnest= ()):
+  """ Normalisation for text-based nodes. Only need to normalise characters.
   """
-  Node._normalize(self,
-    atts, ents, ns, cdata, unws, unnsattr, unns, uncdata,
-    uncomment, unent, wf, cf, cnorm
-  )
-  self._data= cnorm(self._data, self)
+  Node._normalize(self, config, entnest= ())
+  self._data= config._cnorm(self._data, self)
 
 
-def _Comment___normalize(self, text= False,
-  atts= False, ents= False, ns= False, cdata= False, unws= False,
-  unnsattr= False, unns= False, uncdata= False, uncomment= False,
-  unent= False, wf= False, cf= False, cnorm= _identity
-):
+def _Comment___normalize(self, config, entnest= ()):
   """ Normalisations for comment nodes. Only need to check well-formedness.
   """
-  CharacterData._normalize(self,
-    atts, ents, ns, cdata, unws, unnsattr, unns, uncdata,
-    uncomment, unent, wf, cf, cnorm
-  )
-  if wf and (self._data[-1:]=='-' or string.find(self._data, '--'))!=-1:
-    self.ownerDocument.domConfig._handleError(DOMErrorInvalidChar(self))
+  CharacterData._normalize(self, config, entnest)
+  if config.getParameter('well-formed') and (
+    self._data[-1:]=='-' or string.find(self._data, '--')!=-1
+  ):
+    config._handleError(InvalidCharErr(self))
 
 
-def _ProcessingInstruction___normalize(self, text= False,
-  atts= False, ents= False, ns= False, cdata= False, unws= False,
-  unnsattr= False, unns= False, uncdata= False, uncomment= False,
-  unent= False, wf= False, cf= False, cnorm= _identity
-):
+def _ProcessingInstruction___normalize(self, config, entnest= ()):
   """ Normalisations for PI nodes. Only need to check well-formedness.
   """
-  NamedNode._normalize(self,
-    atts, ents, ns, cdata, unws, unnsattr, unns, uncdata,
-    uncomment, unent, wf, cf, cnorm
-  )
-  if wf and string.find(self._data, '?>')!=-1:
-    self.ownerDocument.domConfig._handleError(DOMErrorInvalidChar(self))
+  NamedNode._normalize(self, config, entnest= ())
+  if config.getParameter('well-formed') and string.find(self._data, '?>')!=-1:
+    config._handleError(InvalidCharErr(self))
 
 
-def _EntityReference___normalize(self, text= False,
-  atts= False, ents= False, ns= False, cdata= False, unws= False,
-  unnsattr= False, unns= False, uncdata= False, uncomment= False,
-  unent= False, wf= False, cf= False, cnorm= _identity
-):
+def _EntityReference___normalize(self, config, entnest= ()):
   """ Normalisations for entity references. Remove any child nodes and replace
       them with up-to-date replacement nodes from the doctype's entity list.
   """
-  if ents:
+  if config.getParameter('pxdom-update-entities'):
+    if self.nodeName in entnest:
+      raise CircularEntityReference(entnest+(self.nodeName,))
+
     self.readonly= False
     while self._childNodes.length>0:
       self.removeChild(self._childNodes.item(0))
@@ -2815,30 +2855,21 @@ def _EntityReference___normalize(self, text= False,
         for child in entity.childNodes:
           clone= child._recurse(True, clone= True)
           self.appendChild(clone)
-    NamedNode._normalize(
-      self, text, atts, ents, ns, cdata, unws, unnsattr, unns, uncdata,
-      uncomment, unent, wf, cf, cnorm
-    )
-    for child in self._childNodes:
-      child._recurse(True, readonly= True)
-    self.readonly= True
+
+    bind= config.getParameter('pxdom-bind-entity-namespaces')
+    config.setParameter('pxdom-bind-entity-namespaces', True)
+    try:
+      NamedNode._normalize(self, config, entnest+(self.nodeName,))
+    finally:
+      config.setParameter('pxdom-bind-entity-namespaces', bind)
+    self._recurse(True, readonly= True)
 
 
-def _DocumentType___normalize(self, text= False,
-  atts= False, ents= False, ns= False, cdata= False, unws= False,
-  unnsattr= False, unns= False, uncdata= False, uncomment= False,
-  unent= False, wf= False, cf= False, cnorm= _identity
-):
-  """ Document type node normalisations: just remove the entities collection
-      if no entity references were wanted.
-  """
-  NamedNode._normalize(
-    self, text, atts, ents, ns, cdata, unws, unnsattr, unns, uncdata,
-    uncomment, unent, wf, cf, cnorm
-  )
-  if unent:
-    while self._entities.length>0:
-      self._entities._writeItem(self._entities.item(0), None)
+class CircularEntityReference(Exception):
+  def __init__(self, entnest):
+    self._entnest= entnest
+  def __str__(self):
+    return string.join(self._entnest, '->')
 
 
 # DOM 3 LS Load features
@@ -2903,90 +2934,154 @@ class LSInput(DOMObject):
 
 
 class InputBuffer:
-  """ Utility wrapper for an object implementing the LSInput interface (which
-      could be a user-created object which is why we can't just put this in
-      the LSInput class. For byteStream and systemId inputs, read the raw
-      content from the stream and store it so it can be read more than once if
-      encodings change.
+  """ Wrapper for reading from an LSInput (or user object implementing this
+      interface) or other resource with possible encoding change if an XML
+      declaration is encountered.
   """
-  _xmlTypes= [
-    'text/xml', 'application/xml', 'application/xml-dtd', 'text/xsl'
-    'text/xml-external-parsed-entity','application/xml-external-parsed-entity'
-  ]
+  def __init__(self, input, offset, config, isDocument):
+    self.config= config
+    charsetCertain= config.getParameter('charset-overrides-xml-encoding')
+    checkMT= isDocument and config.getParameter('supported-media-types-only')
 
-  def __init__(self, input, config):
-    self._bytes= None
-    self._characters= None
-    self._encoding= None
-    self._fixed= False
-    self.inputEncoding= None
-    self.uri= input.baseURI
-
-    if input.characterStream is not None:
-      self._characters= input.characterStream.read()
-    elif input.byteStream is not None:
-      self._bytes= input.byteStream.read()
-      if input.encoding is not None:
-        self._encoding= input.encoding
-        self._fixed= True
-    elif input.stringData not in (None, ''):
-      self._characters= input.stringData
-
-    elif input.systemId is not None:
-      self.uri= input.systemId
+    # URI of input source
+    #
+    self.uri= None
+    if input.systemId is not None:
+      self.uri= _encodeURI(input.systemId)
       if input.baseURI is not None:
         self.uri= urlparse.urljoin(input.baseURI, self.uri)
+
+    # Hold encoding currently in use, and bytes or chars read from the input
+    # source. If both bytes and chars are non-None, we are uncertain that the
+    # encoding will prove to be correct; an XML declaration could override it.
+    #
+    self.bytes= None
+    self.encoding= None
+    self.chars= None
+
+    # Whilst parsing, keep pointer into character data. Keep an offset into
+    # data from uri so that we can know what the 'real' index was when dealing
+    # with internal entity values. Store pointer to parent buffer as a hack
+    # for parameter entity parsing.
+    #
+    self.index= 0
+    self.offset= offset
+    self.parent= None
+
+    # Read data from the input source as characters or bytes. If we come out
+    # of this with bytes and an encoding, that encoding's certainty is
+    # dependent on the charset-overrides-xml-encoding parameter.
+    #
+    if input.characterStream is not None:
+      self.chars= input.characterStream.read()
+      self.encoding= NATIVECHARSET
+    elif input.byteStream is not None:
+      self.bytes= input.byteStream.read()
+    elif input.stringData not in (None, ''):
+
+      # Hack. Allow string data to be a blank string by hiding it in a tuple.
+      #
+      if isinstance(input.stringData, type(())):
+        self.chars= input.stringData[0]
+      else:
+        self.chars= input.stringData
+      self.encoding= NATIVECHARSET
+    elif self.uri is not None:
       try:
         stream= urllib.urlopen(self.uri)
       except IOError, e:
-        config._handleError(DOMErrorIOError(e))
-      if config.getParameter('supported-media-types-only'):
+        self.config._handleError(IOErrorErr(e))
+      if checkMT:
         contentType= stream.info().type
-        if contentType not in self._xmlTypes and contentType[-4:]!='+xml':
-          config._handleError(DOMErrorUnsupportedType(None))
-      if input.encoding is not None:
-        self._encoding= input.encoding
-        self._fixed= True
-      else:
-        self._encoding= stream.info().getparam('charset')
-        if self._encoding is not None:
-          self._fixed= config.getParameter('charset-overrides-xml-encoding')
-      self._bytes= stream.read()
+        if contentType not in XMLTYPES and contentType[-4:]!='+xml':
+          self.config._handleError(UnsupportedTypeErr(None))
+      self.encoding= stream.info().getparam('charset')
+      self.bytes= stream.read()
       stream.close()
-
     else:
-      config._handleError(DOMErrorNoInput(None))
+      self.config._handleError(NoInputErr(None))
 
-  def read(self, xmlEncoding= None):
-    """ Return the stored data as a decoded stream of characters. Use the
-        xmlEncoding, if given, if an encoding is needed but at this point
-        still not certain. Store the encoding we actually ended up using in
-        inputEncoding so LSParser can read it back.
+    # If we have bytes, attempt to convert them to characters. If we are
+    # certain of the encoding, drop the original bytes on the floor.
+    #
+    if self.chars is None:
+      certain= self.encoding is not None and charsetCertain
+      if self.encoding is None:
+        if self.bytes[:2] in ('\xff\xfe', '\xfe\xff'):
+          self.encoding= 'utf-16'
+        else:
+          self.encoding= 'utf-8'
+      self.decode(True)
+      if certain:
+        self.bytes= None
+    else:
+      self.decode(False)
+
+  def setEncoding(self, xmlEncoding= None):
+    """ Finished checking for encoding in possible XML declaration. If we were
+        uncertain about the character encoding to use before, update the chars
+        from the bytes again with the new encoding.
     """
-    if self._characters is not None:
-      if unicode and isinstance(self._characters, type(unicode(''))):
-        self.inputEncoding= nativeEncoding
-      return self._characters
-    if self._bytes is None:
-      return ''
+    if self.bytes is not None:
+      if xmlEncoding is not None and xmlEncoding!=self.encoding:
+        self.encoding= xmlEncoding
+        self.decode(True)
+      self.bytes= None
 
-    encoding= self._encoding
-    if xmlEncoding is not None and not self._fixed:
-      encoding= xmlEncoding
-    if encoding is None or string.lower(encoding)=='utf-16':
-      if self._bytes[:2] in ('\xff\xfe', '\xfe\xff'):
-        encoding= 'utf-16'+['be', 'le'][self._bytes[:2]=='\xff\xfe']
-    self.inputEncoding= encoding or 'utf-8'
-    if unicode is None:
-      return r(r(r(self._bytes, EBCLS, '\n'), '\r\n', '\n'), '\r', '\n')
+  def decode(self, fromBytes= True):
+    """ Take input from chars or bytes (decoding through encoding property),
+        send result with normalised newlines and no BOM.
+    """
+    if fromBytes:
+      if unicode is not None:
+        try:
+          codec= codecs.lookup(self.encoding)
+        except LookupError:
+          self.config._handleError(UnsupportedEncodingErr(None))
+        if codec==codecs.lookup('utf-16'):
+          if self.bytes[:2]=='\xff\xfe':
+            self.encoding= 'utf-16le'
+          elif self.bytes[:2]=='\xfe\xff':
+            self.encoding= 'utf-16be'
+        self.chars= unicode(self.bytes, self.encoding, 'replace')
+      else:
+        self.chars= self.bytes
+    self.chars= r(r(r(self.chars, EBCLS, '\n'), '\r\n', '\n'), '\r', '\n')
+    if unicode is not None:
+      self.chars= r(self.chars, UNILS,'\n')
+      if self.chars[:1]==unichr(0xFEFF):
+        self.chars= self.chars[1:]
+
+  def getLocation(self):
+    """ Return (line, column) position corresponding to the current index.
+    """
+    line= string.count(self.chars, '\n', 0, self.index)
+    col= self.index-string.rfind(self.chars, '\n', 0, self.index)-1
+    if line==0:
+      col= col+self.offset[1]
     else:
-      try:
-        data= unicode(self._bytes, self.inputEncoding)
-      except LookupError:
-        raise DOMErrorUnsupportedEncoding(None)
-      if data[:1]==unichr(0xFEFF):
-        data= data[1:]
-      return r(r(r(r(data,EBCLS,'\n'),'\r\n','\n'),'\r','\n'),UNILS,'\n')
+      col= col+1
+    line= line+self.offset[0]
+    return (line, col)
+
+
+# Convenience method for parsers to get an InputBuffer object for a resource
+# with possible resourceResolver redirection.
+#
+def _DOMConfiguration___resolveResource(self, publicId, systemId, baseURI):
+  if not self._parameters['pxdom-resolve-resources']:
+    return None
+  input= None
+  if self._parameters['resource-resolver'] is not None:
+    input= self._parameters['resource-resolver'].resolveResource(
+      DTNS, None, publicId, systemId, baseURI
+    )
+  if input is None:
+    input= LSInput()
+    input.publicId= publicId
+    input.systemId= systemId
+    input.baseURI= baseURI
+  return InputBuffer(input, (1, 1), self, False)
 
 
 class NodeFilter(DOMObject):
@@ -3006,14 +3101,6 @@ class NodeFilter(DOMObject):
     self._whatToShow= value
   def acceptNode(self, n):
     return NodeFilter.FILTER_ACCEPT
-
-class LSParserFilter(NodeFilter):
-  def acceptNode(self, nodeArg): # different argument name - spec wart
-    return NodeFilter.FILTER_ACCEPT
-  def startElement(self, elementArg):
-    return NodeFilter.FILTER_ACCEPT
-class LSSerializerFilter(NodeFilter):
-  pass
 
 
 def _acceptNode(filter, node, startElement= False):
@@ -3050,12 +3137,8 @@ class LSParser(DOMObject):
     DOMObject.__init__(self)
     if config is None:
       config= ParserConfiguration()
-      config.setParameter('entities', False)
-      config.setParameter('cdata-sections', False)
     self._domConfig= config
     self._filter= None
-    self._data= ''
-    self._index= 0
   def _get_domConfig(self):
     return self._domConfig
   def _get_filter(self):
@@ -3068,65 +3151,30 @@ class LSParser(DOMObject):
     return False
   def abort(self):
     pass
-  def _e(self, message):
-    self._domConfig._handleError(ParseError(self, message))
-  def parseURI(self, uri):
-    input= LSInput()
-    input.systemId= uri
-    return self.parse(input)
 
+  # Standard public parse interfaces
+  #
   def parse(self, input):
-    # Create document and load serialised form for parsing
-    #
+    """ Parse complete document from an InputSource.
+    """
     document= Document()
-    try:
-      self._buffer= InputBuffer(input, self._domConfig)
-      self._data= self._buffer.read()
-      self._index= 0
-      self._parseEntity(document, None)
-    except DOMErrorException, e:
-      raise ParseErr(e)
-    self._buffer= None
-
-   # Not all DOM 3 LS normalizations can be done at the parse phase. See if
-   # there is anything we will have to do in a subsequent normalisation step.
-   # This includes whitespace removal, namespace declaration removal, and, if
-   # the input is not XML 1.1 certified, Unicode character normalisation.
-   #
-    if not self._domConfig.getParameter('entities'):
-      if document.doctype is not None:
-        document.doctype._entities= NamedNodeMap(
-          document.doctype, Node.ENTITY_NODE
-        )
-    unnsattr= not self._domConfig.getParameter('namespace-declarations')
-    unws= not self._domConfig.getParameter('element-content-whitespace')
-    cnorm= ( (
-      self._domConfig.getParameter('normalize-characters') or
-      self._domConfig.getParameter('check-character-normalization')
-    ) and not input.certifiedText )
-    if unnsattr or unws or cnorm:
-
-      # Call the normalisation step. The 'assume' parameter has to be hacked
-      # in to the document's domConfig as it gets used directly during the
-      # normalisation process (because of an isElementContentWhitespace call).
-      #
-      if unws:
-        assume=document.domConfig.getParameter('pxdom-assume-element-content')
-        document.domConfig.setParameter('pxdom-assume-element-content',
-          self._domConfig.getParameter('pxdom-assume-element-content')
-        )
-      try:
-        document._normalize(
-          unnsattr= unnsattr, unws= unws, cnorm= self._domConfig._cnorm
-        )
-      except DOMErrorException, e:
-        raise ParseErr(e)
-      if unws:
-        document.domConfig.setParameter('pxdom-assume-element-content',assume)
+    self.pxdomParseBefore(input, document, None)
     return document
 
-
+  def parseURI(self, uri):
+    """ Parse complete document from a URI.
+    """
+    input= LSInput()
+    input.systemId= uri
+    document= Document()
+    self.pxdomParseBefore(input, document, None)
+    return document
+    
   def parseWithContext(self, input, contextArg, action):
+    """ Parse a fragment of document (pxdom interprets this as being the
+        same as an external parsed entity) into a point described by a node
+        and relationship.
+    """
     # Find the node that will contain the new content, either the contextArg
     # or, for certain actions, its parent. Check it can receive content.
     #
@@ -3138,856 +3186,1183 @@ class LSParser(DOMObject):
     ):
       raise NotSupportedErr([pnode,contextArg][pnode is None], 'context')
 
-    self._buffer= InputBuffer(input, self._domConfig)
-    self._data= self._buffer.read()
-    self._index= 0
-
-    try:
-      if action==LSParser.ACTION_REPLACE_CHILDREN:
-        while contextArg.childNodes.length>0:
-          contextArg.removeChild(contextArg.childNodes.item(0))
-        self._parseEntity(contextArg, None)
-        results= contextArg.childNodes._list
-
-      elif action==LSParser.ACTION_APPEND_AS_CHILDREN:
-        index= contextArg.childNodes.length
-        self._parseEntity(contextArg, None)
-        results= contextArg.childNodes._list[index:]
-   
-      elif action==LSParser.ACTION_INSERT_BEFORE:
-        previousSibling= contextArg.previousSibling
-        self._parseEntity(contextArg.parentNode, contextArg)
-        results= []
-        while True:
-          previousSibling= previousSibling.nextSibling
-          if previousSibling is contextArg:
-            break
-          results.append(previousSibling)
-   
-      elif action==LSParser.ACTION_INSERT_AFTER:
-        nextSibling= contextArg.nextSibling
-        self._parseEntity(contextArg.parentNode, nextSibling)
-        results= []
-        node= contextArg
-        while True:
-          node= node.nextSibling
-          if node is nextSibling:
-            break
-          results.append(node)
-   
-      elif action==LSParser.ACTION_REPLACE:
-        previousSibling= contextArg.previousSibling
-        nextSibling= contextArg.nextSibling
-        parentNode= contextArg.parentNode
-        parentNode.removeChild(contextArg)
-        self._parseEntity(parentNode, nextSibling)
-        results= []
-        while True:
-          previousSibling= previousSibling.nextSibling
-          if previousSibling is nextSibling:
-            break
-          results.append(previousSibling)
-
-      if self._index<len(self._data):
-        self._e('Expected end of input')
-      self._buffer= None
-    except DOMErrorException, e:
-      raise ParseErr(e)
-
-    # Post-parsing normalisation for with-context parsing. Note for some
-    # reason, according to spec, element-content-whitespace normalisation is
-    # not done in parseWithContext at all.
+    # Determine where to put the newly-parsed nodes
     #
-    unnsattr= not self._domConfig.getParameter('namespace-declarations')
-    cnorm= not input.certifiedText and (
-      self._domConfig.getParameter('normalize-characters') or
-      self._domConfig.getParameter('check-character-normalization')
-    )
-    if unnsattr or cnorm:
-      cnorm= [_identity, self._domConfig._cnorm][cnorm]
-      try:
-        for result in results:
-          result._normalize(unnsattr= unnsattr, cnorm= cnorm)
-      except DOMErrorException, e:
-        raise ParseErr(e)
+    if action==LSParser.ACTION_INSERT_BEFORE:
+      parentNode= contextArg.parentNode
+      nextSibling= contextArg
+    elif action in [LSParser.ACTION_INSERT_AFTER, LSParser.ACTION_REPLACE]:
+      parentNode= contextArg.parentNode
+      nextSibling= contextArg.nextSibling
+    elif action in [
+      LSParser.ACTION_REPLACE_CHILDREN, LSParser.ACTION_APPEND_AS_CHILDREN
+    ]:
+      parentNode= contextArg
+      nextSibling= None
 
-    if len(results)==0:
-      return None
-    return results[0]
+    if action==LSParser.ACTION_REPLACE:
+      parentNode.removeChild(contextArg)
+    elif action==LSParser.ACTION_REPLACE_CHILDREN:
+      while contextArg.childNodes.length>0:
+        contextArg.removeChild(contextArg.childNodes.item(0))
+
+    if nextSibling is None:
+      previousSibling= parentNode.lastChild
+    else:
+      previousSibling= nextSibling.previousSibling
+
+    # Mysteriously, according to spec, whitespace removal shouldn't work in
+    # parseWithContext.
+    #
+    ws= self._domConfig.getParameter('element-content-whitespace')
+    self._domConfig.setParameter('element-content-whitespace', True)
+    try:
+      self.pxdomParseBefore(input, parentNode, nextSibling)
+    finally:
+      self._domConfig.setParameter('element-content-whitespace', ws)
+
+    # Return the first generated node (if there was one)
+    #
+    if previousSibling is None:
+      refChild= parentNode.firstChild
+    else:
+      refChild= previousSibling.nextSibling
+    if refChild not in [None, nextSibling]:
+      return refChild
+    return None
 
 
-  def _parseEntity(self, parentNode, refChild):
-    """ Parse a document entity or external parsed entity. Check for an XML/
-        text declaration, then get on with parsing content.
+  def pxdomParseBefore(self, input, parentNode, refChild):
+    """ Main parse entry point, allowing content to be parsed into a node
+        specified in the same way as with node.insertBefore. (A slightly saner
+        interface than the parseWithContext call uses.)
     """
-    xmlVersion= None
-    xmlEncoding= None
-    xmlStandalone= None
-    if self._next('<?xml'):
-      self._p_s()
-      if not self._next('version'):
-        self._e('Expected \'version="..."\'')
-      self._p_eq()
-      xmlVersion= self._p_lit()
-      if not self._next('?>', False):
-        self._p_s()
-      if self._next('encoding'):
-        self._p_eq()
-        xmlEncoding= self._p_lit()
-        if not self._next('?>', False):
-          self._p_s()
-      if self._next('standalone'):
-        self._p_eq()
-        standalone= self._p_lit()
-        if standalone not in ('no', 'yes'):
-          self._e('Expected \'no\' or \'yes\'')
-        xmlStandalone= (standalone=='yes')
-        self._p_s(False)
-      if not self._next('?>', True):
-        self._e('Expected \'?>\'')
+    p= self._domConfig.getParameter
 
-    # If a new encoding was specified in the declaration, switch to it and
-    # re-get the input with the new encoding.
+    # If the input source is certified, ignore normalisation options
     #
-    if xmlEncoding not in (None, self._buffer.inputEncoding):
-      self._data= self._buffer.read(xmlEncoding)
-
-    # If the parentNode is a document or external parsed entity, can record
-    # some of these details.
-    #
-    if parentNode.nodeType in (Node.DOCUMENT_NODE, Node.ENTITY_NODE):
-      parentNode._xmlVersion= xmlVersion or '1.0'
-      parentNode._xmlEncoding= xmlEncoding
-      parentNode._inputEncoding= self._buffer.inputEncoding
-    if parentNode.nodeType==Node.DOCUMENT_NODE:
-      parentNode._xmlStandalone= xmlStandalone
-      if self._buffer.uri is not None:
-        parentNode._documentURI= self._buffer.uri
-
-
-    # Enter the main, recursive content-parsing loop for root-level children.
-    #
-    self._textQueue= ''
+    if input.certifiedText:
+      nc= p('normalize-characters')
+      ccn= p('check-character-normalization')
+      self._domConfig.setParameter('normalize-characters', False)
+      self._domConfig.setParameter('check-character-normalization', False)
     try:
-      self._parseContent(parentNode, refChild)
-    except LSFilterInterrupt:
-      pass
+
+      # Dispatch into internal node parsing interfaces
+      #
+      namespaces= parentNode._getNamespaces(FIXEDNS.copy())
+      self._queue= ''
+      try:
+        self._buffer= InputBuffer(input, (1, 1), self._domConfig, True)
+        self._inEntity= False
+        self._Declaration(parentNode)
+        self._Content(parentNode, refChild, namespaces)
+        self._end()
+
+      except LSFilterInterrupt:
+        pass
+    finally:
+      self._buffer= None
+      if input.certifiedText:
+        self._domConfig.setParameter('normalize-characters', nc)
+        self._domConfig.setParameter('check-character-normalization', ccn)
 
 
-  # Low-level input reading
+  # Parsing utility functions
   #
-  def _next(self, data, skip= True):
-    isNext= self._data[self._index:self._index+len(data)]==data
-    if skip and isNext:
-      self._index= self._index+len(data)
-    return isNext
-  def _find(self, chars):
-    finds= []
-    for char in chars:
-      ix= string.find(self._data, char, self._index)
-      if ix!=-1:
-        finds.append(ix)
-    if len(finds)==0:
-      return len(self._data)
-    return min(finds)
-  def _p_s(self, required= True):
-    start= self._index
-    l= len(self._data)
-    while self._index<l and self._data[self._index] in ' \t\n':
-      self._index= self._index+1
-    if required and self._index==start:
-      self._e('Expected whitespace')
-    return self._data[start:self._index]
-  def _p_q(self):
-    if self._index<len(self._data):
-      quote= self._data[self._index]
-      if quote in '"\'':
-        self._index= self._index+1
-        return quote
-    self._e('Expected open-quote \'"\' or \'\'\'')
-  def _p_eq(self):
-    start= self._index
-    self._p_s(False)
-    if not self._next('='):
-      self._e('Expected \'=\'')
-    self._p_s(False)
-    return self._data[start:self._index]
-  def _p_lit(self):
-    start= self._index
-    quote= self._p_q()
-    index= string.find(self._data, quote, self._index+1)
-    if index==-1:
-      self._e('Unclosed literal, no folowing \'%s\'' % quote)
-    self._index= index+1
-    return self._data[start+1: self._index-1]
-  def _p_name(self):
-    start= self._index
-    l= len(self._data)
-    if self._index<l and self._data[self._index] not in _NOTFIRST:
-      self._index= self._index+1
-      while self._index<l and self._data[self._index] not in _NOTNAME:
-        self._index= self._index+1
-    if self._index==start:
-      self._e('Expected name')
-    return self._data[start:self._index]
-  _HEX= '0123456789abcdefABDCDEF'
-  def _p_hex(self):
-    start= self._index
-    l= len(self._data)
-    while self._index<l and self._data[self._index] in self._HEX:
-      self._index= self._index+1
-    if self._index==start:
-      self._e('Expected hex value')
-    return eval('0x'+str(self._data[start:self._index]))
-  _DEC= '0123456789'
-  def _p_dec(self):
-    start= self._index
-    l= len(self._data)
-    while self._index<l and self._data[self._index] in self._DEC:
-      self._index= self._index+1
-    if self._index==start:
-      self._e('Expected hex value')
-    return int(self._data[start:self._index])
-  def _p_enum(self):
-    if not self._next('('):
-      self._e('Expected \'(\' to begin enum list')
-    self._p_s(False)
-    names= []
-    while True:
-      names.append(self._p_name())
-      self._p_s(False)
-      if not self._next('|'):
-        break
-      self._p_s(False)
-    if not self._next(')'):
-      self._e('Expected \')\' to end enum list')
-    return names
+  def _push(self, text):
+    self._queue= self._queue+text
 
-  def _p_cdecl(self, isMixed= False, isRoot= True):
-    elements= ContentDeclaration()
-    elements.isSequence= None
-    while True:
-      self._p_s(False)
-      if isMixed:
-        element= self._p_name()
-      else:
-        if self._next('('):
-          element= self._p_cdecl(False, False)
-        else:
-          element= ContentDeclaration()
-          element._append(self._p_name())
-        self._p_cdecl_checkSuffix(element)
-      elements._append(element)
-      self._p_s(False)
-      if self._next(')'):
-        break
-      if self._next('|'):
-        sequence= False
-      elif self._next(','):
-        sequence= True
-      else:
-        self._e('Expected \'|\' or \',\' to continue declaration list')
-      if elements.isSequence not in (None, sequence):
-        self._e('Content declaration cannot be both choice and sequence')
-      elements.isSequence= sequence
-    if isRoot:
-      self._p_cdecl_checkSuffix(elements)
-    return elements
-  def _p_cdecl_checkSuffix(self, cdecl):
-    if self._next('*'):
-      cdecl.isOptional= True
-      cdecl.isMultiple= True
-    elif self._next('+'):
-      cdecl.isMultiple= True
-    elif self._next('?'):
-      cdecl.isOptional= True
+  def _flush(self, parentNode, refChild):
+    """ Write any text that has been read and queued into a new Text node.
+    """
+    if self._queue=='':
+      return None
+    text= self._domConfig._cnorm(self._queue, parentNode, True)
+    self._queue= ''
+    node= parentNode._ownerDocument.createTextNode(text)
+    node._setLocation(self._buffer.getLocation())
 
-  def _flushText(self, parentNode, refChild):
-    if self._textQueue=='':
-      return
-    text= parentNode._ownerDocument.createTextNode(self._textQueue)
-    self._textQueue= ''
-    text._setLocation(self._getLocation())
-    self._insertFiltered(text, parentNode, refChild)
+    # If whitespace removal is required, must put the node in place to test
+    # whether it is element content whitespace.
+    #
+    if not self._domConfig.getParameter('element-content-whitespace'):
+      node._containerNode= parentNode
+      if node._get_isElementContentWhitespace(self._domConfig):
+        return
+      node._containerNode= None
 
-  def _insertFiltered(self, newNode, parentNode, refChild, norm= False):
+    self._insert(node, parentNode, refChild)
+
+  def _insert(self, newNode, parentNode, refChild):
     """ Utility method to insert a node into a specific place in the document
-        (normalised it if it's an entref) and then find out the filter's point
-        of view if any, possibly removing or skipping it afterwards.
+        and then find out the filter's point of view if any, possibly removing
+        or skipping it afterwards.
     """
     parentNode.insertBefore(newNode, refChild)
-    if norm:
-      newNode._normalize(ents= True)
     accepted= _acceptNode(self._filter, newNode)
-    if accepted==LSParserFilter.FILTER_REJECT:
+    if accepted==NodeFilter.FILTER_REJECT:
       parentNode.removeChild(newNode)
-    elif accepted==LSParserFilter.FILTER_SKIP:
+    elif accepted==NodeFilter.FILTER_SKIP:
       while newNode.firstChild is not None:
         parentNode.insertBefore(newNode.firstChild, newNode)
       parentNode.removeChild(newNode)
 
-  # High-level parsing
+  def _error(self, message):
+    self._domConfig._handleError(ParseErr(self._buffer, message))
+
+
+  # Low-level parsing
   #
-  def _parseContent(self, parentNode, refChild):
+  def _match(self, chars, stepPast= True):
+    """ Check if a string is the next thing in the queue. Optionally and by
+        default step over it if it is.
+    """
+    index= self._buffer.index
+    matches= self._buffer.chars[index:index+len(chars)]==chars
+    if stepPast and matches:
+      self._buffer.index= index+len(chars)
+    return matches
+
+  def _upto(self, chars):
+    """ Read text up until the next occurance of one of a range of characters
+        or strings.
+    """
+    finds= []
+    for s in chars:
+      index= string.find(self._buffer.chars, s, self._buffer.index)
+      if index!=-1:
+        finds.append(index)
+    if len(finds)==0:
+      index= len(self._buffer.chars)
+    else:
+      index= min(finds)
+    try:
+      return self._buffer.chars[self._buffer.index:index]
+    finally:
+      self._buffer.index= index
+
+  def _white(self, required= True):
+    """ Parse white space.
+    """
+    start= self._buffer.index
+    l= len(self._buffer.chars)
     while True:
-      index= self._find('<&')
-      if index>self._index:
-        self._textQueue= self._textQueue+ self._data[self._index:index]
-        self._index= index
-      if self._next('<'): 
-        if self._next('?'):
-          self._parseProcessingInstruction(parentNode, refChild)
-        elif self._next('!'):
-          if self._next('['):
-            if self._next('CDATA['):
-              self._parseCDATASection(parentNode, refChild)
+      index= self._buffer.index
+      if index>=l or self._buffer.chars[index] not in WHITE:
+        break
+      self._buffer.index= index+1
+    if required and index<=start:
+      self._error('Expected whitespace')
+
+  def _quote(self):
+    """ Parse and return a quote character.
+    """
+    for quote in '"\'':
+      if self._match(quote):
+        return quote
+    self._error('Expected open-quote')
+
+  def _equal(self):
+    """ Parse an equals sign with possible white space.
+    """
+    self._white(False)
+    if not self._match('='):
+      self._error('Expected equals sign')
+    self._white(False)
+
+  def _literal(self):
+    """ Parse and return a quoted literal value.
+    """
+    quote= self._quote()
+    value= self._upto(quote)
+    if not self._match(quote):
+      self._error('Quoted literal left open')
+    return self._domConfig._cnorm(value, None, True)
+
+  def _hex(self):
+    """ Parse and return a hexadecimal number.
+    """
+    start= self._buffer.index
+    l= len(self._buffer.chars)
+    while True:
+      index= self._buffer.index
+      if index>=l or self._buffer.chars[index] not in HEX:
+        break
+      self._buffer.index= index+1
+    if index==start:
+      self._error('Expected hex number')
+    return eval('0x'+str(self._buffer.chars[start:self._buffer.index]))
+
+  def _dec(self):
+    """ Parse and return a decimal number.
+    """
+    start= self._buffer.index
+    l= len(self._buffer.chars)
+    while True:
+      index= self._buffer.index
+      if index>=l or self._buffer.chars[index] not in HEX:
+        break
+      self._buffer.index= index+1
+    if index==start:
+      self._error('Expected decimal number')
+    return int(self._buffer.chars[start:self._buffer.index])
+
+  def _name(self):
+    """ Parse and return an XML name.
+    """
+    index= self._buffer.index
+    if index>=len(self._buffer.chars)or self._buffer.chars[index] in NOTFIRST:
+      self._error('Expected name')
+    return self._nmtokens()
+  def _nmtokens(self):
+    start= self._buffer.index
+    l= len(self._buffer.chars)
+    while True:
+      index= self._buffer.index
+      if index>=l or self._buffer.chars[index] in NOTNAME:
+        break
+      self._buffer.index= index+1
+    if index==start:
+      self._error('Expected name tokens')
+    return self._domConfig._cnorm(self._buffer.chars[start:index], None, True)
+
+  def _end(self):
+    """ Check there is no more input to come.
+    """
+    if self._buffer.index<len(self._buffer.chars):
+      self._error('Expected end of input')
+
+
+  # Main structure-parsing methods
+  #
+  def _Declaration(self, parentNode):
+    """ Parse the XML/text declaration, if present.
+    """
+    xmlVersion= None
+    xmlEncoding= None
+    xmlStandalone= None
+
+    if self._match('<?xml'):
+      self._white()
+      if not self._match('version'):
+        self._error('Expected version declaration')
+      self._equal()
+      xmlVersion= self._literal()
+      self._white(False)
+      if self._match('encoding'):
+        self._equal()
+        xmlEncoding= self._literal()
+        self._white(False)
+      if self._match('standalone'):
+        self._equal()
+        standalone= self._literal()
+        if standalone not in ('no', 'yes'):
+          self._error('Expected yes or no')
+        xmlStandalone= (standalone=='yes')
+        self._white(False)
+      if not self._match('?>'):
+        self._error('Expected ?> to close XML/text declaration')
+
+    # Let the buffer know we are now sure about the encoding. This might
+    # change the encoding used to read the file.
+    #
+    self._buffer.setEncoding(xmlEncoding)
+
+    # If the parentNode is a document or external parsed entity, can record
+    # the above details.
+    #
+    if parentNode is not None:
+      if parentNode.nodeType in (Node.DOCUMENT_NODE, Node.ENTITY_NODE):
+        parentNode._xmlVersion= xmlVersion or '1.0'
+        parentNode._xmlEncoding= xmlEncoding
+        parentNode._inputEncoding= self._buffer.encoding
+        parentNode._documentURI= self._buffer.uri
+      if parentNode.nodeType==Node.DOCUMENT_NODE:
+        parentNode._xmlStandalone= xmlStandalone
+
+
+  def _Content(self, parentNode, refChild, namespaces):
+    """ Parse general content.
+    """
+    isDoc= parentNode.nodeType==Node.DOCUMENT_NODE
+    while True:
+
+      # Get text up until next markup character and push it onto the text
+      # queue.
+      #
+      text= self._upto('<&')
+      if text!='':
+        if isDoc:
+          for char in text:
+            if char not in WHITE:
+              self._error('Text not allowed at document level')
+        else:
+          self._push(text)
+      if self._match('</', stepPast= False):
+        break
+
+      # Work out what kind of markup it is and dispatch to relevant parser.
+      #
+      if self._match('<'): 
+        if self._match('?'):
+          self._PI(parentNode, refChild, namespaces)
+        elif self._match('!'):
+          if self._match('['):
+            if self._match('CDATA['):
+              if isDoc:
+                self._error('CDATA not allowed at document level')
+              self._CDATA(parentNode, refChild, namespaces)
             else:
-              self._e('Expected \'CDATA[...]\'')
-          elif self._next('DOCTYPE'):
-            if (parentNode.nodeType!=Node.DOCUMENT_NODE or
-              parentNode.documentElement is not None
+              self._error('Expected \'CDATA[...]\'')
+          elif self._match('DOCTYPE'):
+            if (not isDoc or
+              parentNode.documentElement is not None or
+              parentNode._ownerDocument.doctype is not None
             ):
-              self._e('Doctype must come before root element')
-            if parentNode._ownerDocument.doctype is not None:
-              self._e('Only one doctype is allowed')
+              self._error('Doctype in unexpected position')
             if self._domConfig.getParameter('disallow-doctype'):
-              self._domConfig._handleError(DOMErrorDoctypeNotAllowed(None))
-            self._flushText(parentNode, refChild)
-            self._parseDoctype(parentNode, refChild)
-          elif self._next('--'):
-            self._parseComment(parentNode, refChild)
+              self._domConfig._handleError(DoctypeNotAllowedErr(None))
+            self._Doctype(parentNode, refChild, namespaces)
+          elif self._match('--'):
+            self._Comment(parentNode, refChild, namespaces)
           else:
-            self._e('Expected \'--\' \'DOCTYPE\' or \'[...]\'')
+            self._error('Expected comment, doctype or CDATA')
         else:
-          if self._next('/'):
-            break
-          else:
-            if (parentNode.nodeType==Node.DOCUMENT_NODE and
-              parentNode.documentElement is not None
-            ):
-              self._e('Only one root element is allowed')
-            self._parseElement(parentNode, refChild)
-      elif self._next('&'):
-        if self._next('#'):
-          self._parseCharacterReference(parentNode, refChild)
+          if isDoc and parentNode.documentElement is not None:
+            self._error('Only one root element is allowed')
+          self._Element(parentNode, refChild, namespaces)
+
+      elif self._match('&'):
+        if isDoc:
+          self._error('References are not allowed at document level')
+        if self._match('#'):
+          self._Charref(parentNode, refChild, namespaces)
         else:
-          self._parseEntityReference(parentNode, refChild)
+          self._Entref(parentNode, refChild, namespaces)
+
       else:
         break
-    self._flushText(parentNode, refChild)
+    self._flush(parentNode, refChild)
 
-  def _parseElement(self, parentNode, refChild):
-    self._flushText(parentNode, refChild)
-    nons= not self._domConfig.getParameter('namespaces')
-    qualifiedName= self._p_name()
-    try:
-      element= parentNode._ownerDocument.createElementNS(
-        None, qualifiedName, _strict= False, _default= False
-      )
-    except NamespaceErr:
-      element= parentNode._ownerDocument.createElement(qualifiedName)
-    element._setLocation(self._getLocation())
-    fixups= []
-    empty= False
 
-    # Loop over attributes
+  def _Element(self, parentNode, refChild, namespaces):
+    """ Parse complete element.
+    """
+    self._flush(parentNode, refChild)
+    doc= parentNode._ownerDocument
+    newspaces= namespaces.copy()
+    ns= self._domConfig.getParameter('namespaces')
+
+    # Create element. Check for any default attributes that might introduce
+    # namespaces into scope.
     #
+    element= doc.createElement(self._name())
+    element._setLocation(self._buffer.getLocation())
+    if ns:
+      for attr in element.attributes:
+        if attr.namespaceURI==NSNS:
+          newspaces[[attr.localName, None][attr.prefix is None]]= attr.value
+
+    # First pass (parse) over attributes.
+    #
+    empty= False
     while True:
-      ws= self._p_s(False)
-      if self._next('>'):
+      if self._match('>'):
         break
-      if self._next('/>'):
+      if self._match('/>'):
         empty= True
         break
-      if not ws:
-        self._e('Expected whitespace')
+      self._white()
+      if self._match('>'):
+        break
+      if self._match('/>'):
+        empty= True
+        break
 
-      # Parse attribute and add Attr node
+      name= self._name()
+      attr= element.getAttributeNode(name)
+      if attr is not None and attr.specified:
+        self._error('Duplicate attribute %s' % name)
+
+      # Add attribute node with parsed value. Take note of added namespace
+      # declarations for next pass.
       #
-      qualifiedName= self._p_name()
-      (prefix, localName)= _splitName(qualifiedName)
-      try:
-        if prefix=='xmlns' or prefix is None and localName=='xmlns':
-          attr= parentNode._ownerDocument.createAttributeNS(
-            NSNS, qualifiedName, _strict= False
-          )
-        elif prefix=='xml':
-          attr= parentNode._ownerDocument.createAttributeNS(
-            XMNS, qualifiedName, _strict= False
-          )
-        else:
-          attr= parentNode._ownerDocument.createAttributeNS(
-            None, qualifiedName, _strict= False
-          )
-      except NamespaceErr:
-        attr= parentNode._ownerDocument.createAttribute(qualifiedName)
-      self._p_eq()
-      self._index= self._index+1
-      attr._setLocation(self._getLocation())
-      self._index= self._index-1
-      filter= self._filter
-      self._filter= None
-      try:
-        self._parseAttributeValue(attr, None)
-      finally:
-        self._filter= filter
-      if element.setAttributeNode(attr) is not None:
-        self._e('Attribute \'%s\' given more than once' % qualifiedName)
+      attr= doc.createAttribute(name)
+      attr._setLocation(self._buffer.getLocation())
+      self._equal()
+      self._Attr(attr, None, namespaces)
+
+      prefix, localName= _splitName(name)
+      if ns and 'xmlns' in (name, prefix):
+        newspaces[[localName, None][prefix is None]]= attr.value
+      if not ns or self._domConfig.getParameter('namespace-declarations'):
+        element.setAttributeNode(attr)
+
       if attr.schemaTypeInfo.typeName=='ID':
         element.setIdAttributeNode(attr, True)
-      if attr.namespaceURI is None:
-        fixups.append(attr)
 
-    # Put the element into the document, then fix up namespace values for the
-    # element and any non-xmlns attributes, dependent on the new position.
+    # If namespace parsing, use the new in-scope namespaces to work out the
+    # namespaceURIs of the element and its attributes, converting them up to
+    # level 2 nodes.
+    #
+    if ns:
+      prefix, localName= _splitName(element.nodeName)
+      if localName is None:
+        self._error('Element %s not namespace-well-formed' % element.nodeName)
+      element._prefix= prefix
+      element._localName= localName
+      if newspaces.has_key(prefix):
+        element._namespaceURI= newspaces[prefix]
+      else:
+        element._namespaceURI= None
+        if prefix is not None:
+          self._domConfig._handleError(UnboundNSErr(element, self._inEntity))
+
+      for attr in element.attributes:
+        prefix, localName= _splitName(attr.nodeName)
+        if localName is None:
+          self._error('Attr %s not namespace-well-formed' % attr.nodeName)
+        attr._prefix= prefix
+        attr._localName= localName
+        if prefix is None and localName=='xmlns':
+          attr._namespaceURI= NSNS
+        elif prefix is None:
+          attr._namespaceURI= None
+        elif newspaces.has_key(prefix):
+          attr._namespaceURI= newspaces[prefix]
+        else:
+          attr._namespaceURI= None
+          self._domConfig._handleError(UnboundNSErr(element, self._inEntity))
+
+    # Add element to document. Check the filter's initial opinion on it
     #
     parentNode.insertBefore(element, refChild)
-    if element.localName is not None:
-      element._namespaceURI= element.lookupNamespaceURI(element.prefix)
-    for attr in fixups:
-      if attr.namespaceURI is None and attr.prefix is not None:
-        attr._namespaceURI= element.lookupNamespaceURI(attr.prefix)
-    element._setDefaultAttributes()
-
-    # Check that filter allows the element to be added. If not, we will still
-    # have to parse all the following stuff without telling the filter we're
-    # doing so, and throw the results away.
-    #
     if parentNode.nodeType==Node.DOCUMENT_NODE:
-      accepted= LSParserFilter.FILTER_ACCEPT
+      accepted= NodeFilter.FILTER_ACCEPT
     else:
       accepted= _acceptNode(self._filter, element, startElement= True)
+    if accepted!=NodeFilter.FILTER_ACCEPT:
+        parentNode.removeChild(element)
+    if not empty:
 
-    if accepted==LSParserFilter.FILTER_REJECT:
-      if not empty:
+      # If the filter doesn't want it at all, must parse the contents without
+      # informing the filter and throw the lot away. Otherwise parse content
+      # as either child or replacement.
+      #
+      if accepted==NodeFilter.FILTER_REJECT:
         filter= self._filter
         self._filter= None
-        self._parseContent(element, None)
-        self._filter= filter
-      parentNode.removeChild(element)
+        try:
+          self._Content(element, None, newspaces)
+        finally:
+          self._filter= filter
+      elif accepted==NodeFilter.FILTER_SKIP:
+        self._Content(parentNode, refChild, newspaces)
+      elif accepted==NodeFilter.FILTER_ACCEPT:
+        self._Content(element, None, newspaces)
 
-    elif accepted==LSParserFilter.FILTER_SKIP:
-      parentNode.removeChild(element)
-      if not empty:
-        self._parseContent(parentNode, refChild)
-
-    elif not empty:
-      self._parseContent(element, None)
+    # Parse end-tag
+    #
+    if not empty:
+      if not self._match('</'+element.tagName):
+        self._error('Expected %s end-tag' % element.tagName)
+      self._white(False)
+      if not self._match('>'):
+        self._error('Expected close angle bracket')
 
     # After parsing all the content into the element, ask the filter again
-    # what to do with it. insertFiltered is used; it doesn't matter that the
-    # node is already inserted as the second insert will have no effect.
+    # what to do with it. _insert is used; it doesn't matter that the node is
+    # already inserted as the second insert will have no effect.
     #
-    if accepted==LSParserFilter.FILTER_ACCEPT:
+    if accepted==NodeFilter.FILTER_ACCEPT:
       if parentNode.nodeType==Node.DOCUMENT_NODE:
         parentNode.insertBefore(element, refChild)
       else:
-        self._insertFiltered(element, parentNode, refChild)
+        self._insert(element, parentNode, refChild)
 
-    # Parse remainder of end-tag (the ETAGO is eaten by _parseContent)
+
+  def _Attr(self, parentNode, refChild, namespaces):
+    """ Parse quoted attribute value.
+    """
+    # Attr children are never passed to filter.
     #
-    if not empty:
-      if not self._next(element.tagName):
-        self._e('Expected \'%s\' end-tag' % element.tagName)
-      self._p_s(False)
-      if not self._next('>'):
-        self._e('Expected \'>\'')
+    filter= self._filter
+    self._filter= None
 
-
-  def _parseAttributeValue(self, parentNode, refChild):
-    quote= self._p_q()
+    quote= self._quote()
     while True:
-      index= self._find(quote+'&<')
-      if index>self._index:
-        self._textQueue= self._textQueue+r(r(self._data[self._index:index],
-          '\t', ' '), '\n', ' '
-        )
-        self._index= index
-      if self._next('&'):
-        if self._next('#'):
-          self._parseCharacterReference(parentNode, refChild)
+      text= self._upto('&'+quote)
+      if text!='':
+        for white in WHITE:
+          text= r(text, white, ' ')
+        if '<' in text:
+          self._domConfig._handleError(InvalidAttrErr(parentNode))
+        self._push(text)
+      if self._match('&'):
+        if self._match('#'):
+          self._Charref(parentNode, refChild, namespaces)
         else:
-          self._parseEntityReference(parentNode, refChild, replaceWhite= True)
-      elif self._next('<'):
-        self._e('Attribute value may not contain \'<\'')
+          self._Entref(parentNode, refChild, namespaces, unwhite=True)
       else:
         break
-    if not self._next(quote):
-      self._e('Expected close-quote \'%s\'' % quote)
-    self._flushText(parentNode, refChild)
+    if not self._match(quote):
+      self._error('Attr value left open, expected close quote')
+    self._flush(parentNode, refChild)
+    self._filter= filter
 
-  def _parseCharacterReference(self, parentNode, refChild):
-    if self._next('x'):
-      value= self._p_hex()
+
+  def _Charref(self, parentNode, refChild, namespaces):
+    """ Parse character references.
+    """
+    # Read character number from hex or decimal.
+    #
+    if self._match('x'):
+      value= self._hex()
     else:
-      value= self._p_dec()
-    if not self._next(';'):
-      self._e('Expected \';\' to end entity reference')
-    if unicode is None and value>=0x100:
-      self._flushText(parentNode, refChild)
-      ent= parentNode._ownerDocument.createEntityReference(
-        '#'+str(value), _strict= False
-      )
-      parentNode.insertBefore(ent, refChild)
-    else:
-      if unicode is None:
-        char= chr(value)
+      value= self._dec()
+    if not self._match(';'):
+      self._error('Expected semicolon after character reference')
+
+    # On pre-Unicode Pythons, store non-ASCII character references as fake
+    # unbound entity references, so they can at least be output again.
+    #
+    if unicode is None:
+      if value>=128:
+        self._flush(parentNode, refChild)
+        ent= EntityReference(self, name)
+        ent._nodeName= '#'+str(value)
+        ent._setLocation(self._buffer.getLocation())
+        self._insert(ent, parentNode, refChild)
+
+      # Otherwise add as text to the queue
+      #
       else:
-        char= unichr(value)
-      self._textQueue= self._textQueue+char
-
-  _ENTITIES= { 'amp': '&', 'lt': '<', 'gt': '>', 'quot': '"', 'apos': "'" }
-  def _parseEntityReference(self, parentNode, refChild, replaceWhite= False):
-    name= self._p_name()
-    if not self._next(';'):
-      self._e('Expected \';\' to end entity reference')
-    if LSParser._ENTITIES.has_key(name):
-      char= LSParser._ENTITIES[name]
-      self._textQueue= self._textQueue+char
+        self._push(chr(value))
     else:
+      self._push(unichr(value))
+
+
+  def _Entref(self, parentNode, refChild, namespaces, unwhite= False):
+    name= self._name()
+    if not self._match(';'):
+      self._error('Expected semicolon after entity reference')
+
+    # Replace built-in entity references with plain text
+    #
+    char= {'amp':'&','lt':'<','gt':'>','quot':'"','apos':"'"}.get(name, None)
+    if char is not None:
+      self._push(char)
+    else:
+
+      # Make an entity reference with the given name and use normalisation to
+      # fill in child content, setting namespaceURIs on prefixes that are
+      # newly-bound in the current document position.
+      #
       ent= None
-      if not self._domConfig.getParameter('entities'):
-        doctype= parentNode._ownerDocument.doctype
-        if doctype is not None:
-          ent= doctype.entities.getNamedItem(name)
-      if ent is None:
-        self._flushText(parentNode, refChild)
-        ent= parentNode._ownerDocument.createEntityReference(name)
-        ent._setLocation(self._getLocation())
-        self._insertFiltered(ent, parentNode, refChild, norm= True)
+      if parentNode._ownerDocument.doctype is not None:
+        ent= parentNode._ownerDocument.doctype.entities.getNamedItem(name)
+      available= ent is not None and ent.pxdomAvailable
+      ent= EntityReference(parentNode._ownerDocument, name)
+      ent._setLocation(self._buffer.getLocation())
+      parentNode.insertBefore(ent, refChild)
+      try:
+        ent._normalize(DOMCONFIG_ENTS_BIND)
+      except CircularEntityReference, e:
+        self._error('Reference to entity with circular definition '+str(e))
+
+      # Insert it again with filtering (doesn't matter that it's already in
+      # the document, _insert will cope) or, if 'entities' is off, insert the
+      # children whilst doing text node normalisation.
+      #
+      if self._domConfig.getParameter('entities') or not available:
+        self._flush(parentNode, refChild)
+        self._insert(ent, parentNode, refChild)
       else:
+        parentNode.removeChild(ent)
         for index in range(ent.childNodes.length):
           child= ent.childNodes.item(index)
           if child.nodeType==Node.TEXT_NODE:
-            value= child.data
-            if replaceWhite:
-              value= r(r(child.data, '\t', ' '), '\n', ' ')
-            self._textQueue= self._textQueue+value
+            text= child.data
+            if unwhite:
+              for white in WHITE:
+                text= r(text, white, ' ')
+            self._push(text)
           else:
-            self._flushText(parentNode, refChild)
-            parentNode.insertBefore(child.cloneNode(True), refChild)
+            self._flush(parentNode, refChild)
+            clone= child.cloneNode(True)
+            parentNode.insertBefore(clone, refChild)
 
-  def _parseComment(self, parentNode, refChild):
-    index= string.find(self._data, '-->', self._index)
-    if index==-1:
-      self._e('Unclosed comment, no following \'-->\'')
+            # When removing entity references, need to preserve baseURI by
+            # adding xml:base attributes. Complain for PIs. It is unclear
+            # whether we need to do the same during serialisation and/or
+            # normalisation processes, so we don't for now.
+            #
+            if clone.baseURI!=child.baseURI:
+              if child.nodeType==Node.ELEMENT_NODE:
+                clone.setAttributeNS(XMNS, 'xml:base', child.baseURI)
+              elif child.nodeType==Node.PROCESSING_INSTRUCTION_NODE:
+                self._domConfig._handleError(PIBaseURILost(child))
+
+
+  def _Comment(self, parentNode, refChild, namespaces):
+    data= self._upto(['--'])
+    if not self._match('-->'):
+      self._error('Expected --> to close comment')
     if self._domConfig.getParameter('comments'):
-      self._flushText(parentNode, refChild)
-      comment= parentNode._ownerDocument.createComment(
-        self._data[self._index:index]
-      )
-      comment._setLocation(self._getLocation())
-      self._insertFiltered(comment, parentNode, refChild)
+      self._flush(parentNode, refChild)
+      comment= parentNode._ownerDocument.createComment(data)
+      comment._setLocation(self._buffer.getLocation())
+      self._insert(comment, parentNode, refChild)
+
+
+  def _PI(self, parentNode, refChild, namespaces):
+    target= self._name()
+    data= ''
+    if not self._match('?>'):
+      self._white()
+      data= self._upto(['?>'])
+      if not self._match('?>'):
+        self._error('Expected ?> to close processing instruction')
+    pi= parentNode._ownerDocument.createProcessingInstruction(target, data)
+    pi._setLocation(self._buffer.getLocation())
+    self._flush(parentNode, refChild)
+    self._insert(pi, parentNode, refChild)
+
+
+  def _CDATA(self, parentNode, refChild, namespaces):
+    data= self._upto([']]>'])
+    if not self._match(']]>'):
+      self._error('CDATA left open, expected ]]> to close')
+    if not self._domConfig.getParameter('cdata-sections'):
+      self._push(data)
     else:
-      self._textQueue= self._textQueue+self._data[self._index:index]
-    self._index= index+3
+      cdata= parentNode._ownerDocument.createCDATASection(data)
+      cdata._setLocation(self._buffer.getLocation())
 
-  def _parseProcessingInstruction(self, parentNode, refChild):
-    self._flushText(parentNode, refChild)
-    target= self._p_name()
-    index= self._index
-    if self._p_s(False)!='':
-      index= string.find(self._data, '?>', self._index)
-      if index==-1:
-        self._e('Unclosed PI, no following \'?>\'')
-    elif not self._next('?>'):
-      self._e('Expected whitespace or end of PI')
-    pi= parentNode._ownerDocument.createProcessingInstruction(
-      target, self._data[self._index:index]
-    )
-    pi._setLocation(self._getLocation())
-    self._insertFiltered(pi, parentNode, refChild)
-    self._index= index+2
+      # Depending on configuration parameter, possibly throw away CDATA
+      # sections in element content that contain only whitespace. It is
+      # currently unclear from spec whether this is the right thing.
+      #
+      if not self._domConfig.getParameter('element-content-whitespace'):
+        cdata._containerNode= parentNode
+        if cdata._get_isElementContentWhitespace(self._domConfig):
+          cdata= None
+        else:
+          cdata._containerNode= None
 
-  def _parseCDATASection(self, parentNode, refChild):
-    index= string.find(self._data, ']]>', self._index)
-    if index==-1:
-      self._e('Unclosed CDATA section, no following \']]>\'')
-    if self._domConfig.getParameter('cdata-sections'):
-      self._flushText(parentNode, refChild)
-      cdata= parentNode._ownerDocument.createCDATASection(
-        self._data[self._index:index]
-      )
-      cdata._setLocation(self._getLocation())
-      self._insertFiltered(cdata, parentNode, refChild)
-    else:
-      self._textQueue= self._textQueue+self._data[self._index:index]
-    self._index= index+3
+      if cdata is not None:
+        self._flush(parentNode, refChild)
+        self._insert(cdata, parentNode, refChild)
 
-  def _parseDoctype(self, parentNode, refChild):
-    self._p_s()
-    qualifiedName= self._p_name()
-    self._p_s()
-    publicId= None
-    systemId= None
-    if self._next('SYSTEM'):
-      self._p_s()
-      systemId= self._p_lit()
-      self._p_s(False)
-    if self._next('PUBLIC'):
-      self._p_s()
-      publicId= self._p_lit()
-      self._p_s(False)
-      if self._index>=len(self._data) or self._data[self._index] not in '[>':
-        systemId= self._p_lit()
-        self._p_s(False)
-    doctype= parentNode._ownerDocument.implementation.createDocumentType(
-      qualifiedName, publicId, systemId
-    )
+
+  def _Doctype(self, parentNode, refChild, namespaces):
+    self._white()
+    name= self._name()
+    if not self._match('>'):
+      self._white()
+    publicId, systemId= self._externalId(None)
+
+    # Create and insert doctype node. Make it temporarily not readonly.
+    #
+    imp= parentNode._ownerDocument.implementation
+    p= self._domConfig.getParameter
+    doctype= imp.createDocumentType(name, publicId, systemId)
+    doctype._recurse(True, readonly= False)
     parentNode.insertBefore(doctype, refChild)
-    if self._next('['):
-      doctype.entities.readonly= False
-      doctype.notations.readonly= False
-      doctype.internalSubset= self._parseInternalSubset(doctype)
-      for node in doctype.entities._list:
-        node._recurse(True, readonly= True)
-      doctype.entities.readonly= True
-      for node in doctype.notations._list:
-        node._recurse(True, readonly= True)
-      doctype.notations.readonly= True
-      if not self._next(']'):
-        self._e('Expected \']\' to close internal subset')
-      self._p_s(False)
-    if not self._next('>'):
-      self._e('Expected \'>\' to close doctype')
 
-  def _parseInternalSubset(self, doctype):
-    self._pes= {}
-    self._processInternalSubset= True
-    filter= self._filter
-    self._filter= None
-    try:
-      start= self._index
-      while self._index<len(self._data):
-        self._p_s(False)
-        if self._next(']', skip= False):
-          break
-        elif self._next('%'):
-          self._parseParameterEntityReference(doctype)
-        elif self._next('<'):
-          if self._next('?'):
-            index= string.find(self._data, '?>', self._index)
-            if index==-1:
-              self._e('Unclosed PI, no following \'?>\'')
-            self._index= index+2
-          elif self._next('!'):
-            if self._next('--'):
-              index= string.find(self._data, '-->', self._index)
-              if index==-1:
-                self._e('Unclosed comment, no following \'-->\'')
-              self._index= index+3
-            elif self._next('ENTITY'):
-              self._parseEntityDeclaration(doctype)
-            elif self._next('NOTATION'):
-              self._parseNotation(doctype)
-            elif self._next('ELEMENT'):
-              self._parseElementDeclaration(doctype)
-            elif self._next('ATTLIST'):
-              self._parseAttributeListDeclaration(doctype)
-            else:
-              self._e('Expected markup declaration')
+    # Parse internal subset if given
+    #
+    self._white(False)
+    if self._match('['):
+      start= self._buffer.index
+      self._DTD(doctype, False)
+      if start<self._buffer.index:
+        doctype.internalSubset= self._buffer.chars[start:self._buffer.index]
+      if not self._match(']'):
+        self._error('Internal subset left open, expected ]')
+      self._white(False)
+    if not self._match('>'):
+      self._error('Doctype left open, expected >')
+
+    # Resolve and parse external DTD subset
+    #
+    if systemId is not None:
+      baseURI= parentNode.documentURI
+      buffer= self._buffer
+      self._buffer=self._domConfig._resolveResource(publicId,systemId,baseURI)
+      if self._buffer is None:
+        doctype._processed= False
+      else:
+        self._Declaration(None)
+        self._DTD(doctype, True)
+        self._end()
+      self._buffer= buffer
+
+    # Finished, can throw away any PEs (as they cannot be used in document
+    # content) and make it readonly again.
+    #
+    doctype._parameterEntities= None
+    doctype._recurse(True, readonly= True)
+
+
+  # Parameter entity handling for DTD parsing.
+  #
+  def _checkPE(self, doctype, white= True):
+    """ Check whether the buffer contains a parameter entity reference, or
+        whether the buffer is coming to an end inside a parameter entity. In
+        either case return a different buffer object to the caller to carry on
+        parsing. Optionally skip white spaces at the edges of references and
+        replacements.
+    """
+    while True:
+      if white:
+        self._white(False)
+
+      # Step into PE
+      #
+      if self._match('%'):
+        name= self._name()
+        if not self._match(';'):
+          self._error('Expected ; to end parameter reference')
+        if doctype is not None and doctype._processed:
+          if not doctype._parameterEntities.has_key(name):
+            self._error(self._buffer,'Reference to undefined parameter entity')
+          par= doctype._parameterEntities[name]
+          if par is None:
+            doctype._processed= False
           else:
-            self._e('Expected markup declaration')
-        else:
-          self._e('Expected markup declaration')
-      if start==self._index:
-        return None
-      return self._data[start:self._index]
-    finally:
-      self._filter= filter
+            if par.parent is not None:
+              self._error('Circular reference in parameter '+name)
+            par.parent= self._buffer
+            self._buffer= par
+        continue
 
-  def _parseParameterEntityReference(self, doctype):
-    start= self._index-1
-    name= self._p_name()
-    if not self._next(';'):
-      self._e('Expected \';\' to end PE reference')
-    if self._processInternalSubset:
-      if not self._pes.has_key(name):
-        self._e('Unbound parameter entity \'%s\'' % name)
-      if self._pes[name] is None:
-        if not doctype._ownerDocument.standalone:
-          self._processInternalSubset= False
-      else:
-        self._data=self._data[:start]+self._pes[name]+self._data[self._index:]
-        self._index= start
+      # Step out of PE
+      #
+      l= len(self._buffer.chars)
+      if self._buffer.index>=l and self._buffer.parent is not None:
+        par= self._buffer.parent
+        self._buffer.parent= None
+        self._buffer.index= 0
+        self._buffer= par
+        continue
+      break
 
-  def _parseEntityDeclaration(self, doctype):
-    pe= False
-    peValue= None
-    publicId= None
-    systemId= None
-    notationName= None
-    entity= None
-    self._p_s()
-    if self._next('%'):
-      pe= True
-      self._p_s()
-    name= self._p_name()
-    self._p_s()
-    if self._next('SYSTEM'):
-      self._p_s()
-      systemId= self._p_lit()
-      self._p_s(False)
-      if self._next('NDATA'):
-        self._p_s()
-        notationName= self._p_name()
-    elif self._next('PUBLIC'):
-      self._p_s()
-      publicId= self._p_lit()
-      self._p_s()
-      systemId= self._p_lit()
-      self._p_s(False)
-      if self._next('NDATA'):
-        self._p_s()
-        notationName= self._p_name()
-    else:
-      if pe:
-        peValue= self._p_lit()
-      else:
-        entity= doctype.createEntity(name, None, None, None)
-        quote= self._p_q()
-        index= string.find(self._data, quote, self._index)
-        if index==-1:
-          self._e('Unclosed entity value, no \'%s\'' % quote)
-        tail= self._data[index:]
-        self._data= self._data[:index]
-        queue= self._textQueue
-        self._textQueue= ''
-        self._parseContent(entity, None)
-        self._textQueue= queue
-        self._data= self._data+tail
-        self._index= self._index+1
-    self._p_s(False)
-    if not self._next('>'):
-      self._e('Expected \'>\' to end entity declaration')
-    if self._processInternalSubset:
-      if pe:
-        if not self._pes.has_key(name):
-          self._pes[name]= peValue
-      else:
-        if entity is None:
-          entity= doctype.createEntity(name, publicId, systemId, notationName)
-          entity._available= False
-        if doctype.entities.getNamedItem(name) is None:
-          if entity._containsUnboundPrefix():
-            self._domConfig._handleError(DOMErrorUnboundNamespaceInEntity(entity))
-          doctype.entities.setNamedItem(entity)
-  def _parseNotation(self, doctype):
-    self._p_s()
-    name= self._p_name()
-    self._p_s()
-    publicId= None
-    systemId= None
-    if self._next('SYSTEM'):
-      self._p_s()
-      systemId= self._p_lit()
-    elif self._next('PUBLIC'):
-      self._p_s()
-      publicId= self._p_lit()
-      self._p_s(False)
-      if not self._next('>', skip= False):
-        systemId= self._p_lit()
-        self._p_s(False)
-    else:
-      self._e('Expected \'PUBLIC\' or \'SYSTEM\'')
-    if not self._next('>'):
-      self._e('Expected \'>\' to close notation declaration')
-    if self._processInternalSubset:
-      if doctype.notations.getNamedItem(name) is None:
-        notation= doctype.createNotation(name, publicId, systemId)
-        doctype.notations.setNamedItem(notation)
-  def _parseElementDeclaration(self, doctype):
-    self._p_s()
-    name= self._p_name()
-    self._p_s()
-    if self._next('EMPTY'):
-      contentType= ElementDeclaration.EMPTY_CONTENT
-      elements= None
-    elif self._next('ANY'):
-      contentType= ElementDeclaration.ANY_CONTENT
-      elements= None
-    elif self._next('('):
-      self._p_s(False)
-      if self._next('#PCDATA'):
-        contentType= ElementDeclaration.MIXED_CONTENT
-        self._p_s(False)
-        if self._next('|'):
-          elements= self._p_cdecl(True)
-          if not elements.isMultiple or not elements.isOptional:
-            self._e('Mixed content group must end with \'*\'')
-        elif self._next(')'):
-          elements= ContentDeclaration()
+
+  def _externalId(self, doctype, isNotation= False):
+    """ Parse optional PUBLIC/SYSTEM ID as used by external entity/DTD subset.
+        For notation declarations, allow a PUBLIC ID on its own.
+    """
+    if self._match('PUBLIC'):
+      self._checkPE(doctype)
+      publicId= self._literal()
+      self._checkPE(doctype)
+      systemId= None
+      if not isNotation or not self._match('>', stepPast= False):
+        systemId= self._literal()
+      return (publicId, systemId)
+    elif self._match('SYSTEM'):
+      self._checkPE(doctype)
+      return (None, self._literal())
+    return (None, None)
+
+
+  # DTD structure-parsing methods
+  #
+  def _DTD(self, doctype, external):
+    """ Parse DTD declarations from internal or external subset or a DeclSep
+        parameter entity reference.
+    """
+    while True:
+      self._checkPE(doctype)
+      if (
+        self._buffer.index==len(self._buffer.chars) or
+        not external and self._match(']', stepPast=False)
+      ):
+        break
+
+      # Dispatch declarations to appropriate parsing method. Ignore PIs and
+      # comments; they do not appear in the DOM as DocumentType never has
+      # any children. For some reason.
+      #
+      if self._match('<'):
+        if self._match('?'):
+          self._upto('?>')
+          if not self._match('?>'):
+            self._error('Expected ?> to close PI')
+          continue
+
+        if self._match('!'):
+          if self._match('--'):
+            self._upto(['--'])
+            if not self._match('-->'):
+              self._error('Expected --> to close comment')
+            continue
+
+          if self._match('['):
+            self._checkPE(doctype)
+            if not external:
+              self._error('Cannot use conditionals in doctype')
+            if self._match('INCLUDE'):
+              self._checkPE(doctype)
+              if not self._match('['):
+                self._error('Expected open square bracket')
+              self._DTD(doctype, external)
+              if not self._match(']]>'):
+                self._error('Expected ]]> to close conditional')
+              continue
+            if self._match('IGNORE'):
+              self._checkPE(doctype)
+              if not self._match('['):
+                self._error('Expected open square bracket')
+              nest= 1
+              while nest>0:
+                self._upto([']]>', '<!['])
+                if self._match(']]>'):
+                  nest= nest-1
+                elif self._match('<!['):
+                  nest= nest+1
+                else:
+                  self._error('Expected ]]> to close conditional')
+              continue
+
+          decl= None
+          if self._match('NOTATION'):
+            decl= self._NotationD
+          elif self._match('ENTITY'):
+            decl= self._EntityD
+          elif self._match('ATTLIST'):
+            decl= self._AttlistD
+          elif self._match('ELEMENT'):
+            decl= self._ElementD
+          if decl is not None:
+            decl(doctype)
+            self._checkPE(doctype)
+            if not self._match('>'):
+              self._error('Expected close angle bracket')
+            continue
+      self._error('Expected markup declaration')
+
+
+  def _NotationD(self, doctype):
+    """ Parse notation declaration.
+    """
+    self._checkPE(doctype)
+    name= self._name()
+    self._checkPE(doctype)
+    publicId, systemId= self._externalId(doctype, True)
+    if doctype._processed and doctype._notations.getNamedItem(name) is None:
+      notation=doctype.createNotation(name,publicId,systemId,self._buffer.uri)
+      doctype.notations.setNamedItem(notation)
+
+
+  def _EntityD(self, doctype):
+    """ Parse entity declaration.
+    """
+    # Read parameter or general entity
+    #
+    self._white()
+    isParameter= self._match('%')
+    self._checkPE(doctype)
+    name= self._name()
+    self._checkPE(doctype)
+    publicId, systemId= self._externalId(doctype)
+    self._checkPE(doctype)
+
+    # Internal entities: read the replacement text from a literal, replacing
+    # character references and parameter entity references, but *not* any
+    # other type of entity reference, even the built-ins.
+    #
+    if systemId is None:
+      value= ''
+      quote= self._quote()
+      location= self._buffer.getLocation()
+      while True:
+        value= value+self._upto('&%'+quote)
+
+        if self._match('&'):
+          if not self._match('#'):
+            value= value+'&'
+            continue
+          if self._match('x'):
+            char= self._hex()
+          else:
+            char= self._dec()
+          if not self._match(';'):
+            self._error('Expected semicolon after char reference')
+          if unicode is not None:
+            value= value+unichr(char)
+          elif char<128:
+            value= value+chr(char)
+          else:
+            value= value+'&#'+str(char)+';'
+  
+        elif self._match(quote):
+          break
+
         else:
-          self._e('Expected \'|\' or end of list')
-      else:
-        contentType= ElementDeclaration.ELEMENT_CONTENT
-        elements= self._p_cdecl(False)
+          self._checkPE(doctype, white= False)
+          if self._buffer.index>=len(self._buffer.chars):
+            self._error('Entity internal value left open')
+        
+      input= LSInput()
+      input.stringData= (value,) # hack to allow empty string
+      input.systemId= self._buffer.uri
+      extbuf= InputBuffer(input, location, self._domConfig, False)
+      entity= doctype.createEntity(name, None, None, None, self._buffer.uri)
+
+    # External entities: check for notation (which makes it an unparsed
+    # entity) otherwise create LSInput representing external resource and
+    # pass it through any LSResourceResolver in use, then make a buffer and
+    # read then remove any text-declaration from it.
+    #
     else:
-      self._e('Expected content declaration')
-    self._p_s(False)
-    if not self._next('>'):
-      self._e('Expected declaration-ending \'>\'')
-    if self._processInternalSubset:
-      if doctype._elements.getNamedItem(name) is None:
-        element= doctype.createElementDeclaration(name, contentType, elements)
-        doctype._elements.setNamedItem(element)
-  def _parseAttributeListDeclaration(self, doctype):
-    self._p_s()
-    name= self._p_name()
-    self._p_s()
-    if self._processInternalSubset:
+      notation= None
+      if not self._match('>', stepPast= False):
+        self._checkPE(doctype)
+      if self._match('NDATA'):
+        self._checkPE(doctype)
+        notation= self._name()
+      entity= doctype.createEntity(
+        name, publicId, systemId, notation, self._buffer.uri
+      )
+
+      extbuf= None
+      if notation is None:
+        extbuf= self._domConfig._resolveResource(
+          publicId, systemId, self._buffer.uri
+        )
+      if extbuf is None:
+        entity._available= False
+      else:
+        buffer= self._buffer
+        self._buffer= extbuf
+        self._Declaration(entity)
+        self._buffer= buffer
+        extbuf.offset= extbuf.getLocation()
+        extbuf.chars= extbuf.chars[extbuf.index:]
+        extbuf.index= 0
+
+    # Parameter entities: store InputBuffer in parameterEntities dictionary,
+    # ignore Entity object.
+    #
+    if isParameter:
+      if entity.notationName is not None:
+        self._error('Parameter entities must be parsed entities')
+      if doctype._processed and not doctype._parameterEntities.has_key(name):
+        doctype._parameterEntities[name]= extbuf
+
+    # General entities: store Entity object in entities NamedNodeMap. If it's
+    # parsed entity, fill in its children by parsing the InputBuffer now as
+    # content. Don't let the filter know about it though, and make sure that
+    # entity references inside aren't replaced with their content yet.
+    #
+    else:
+      if doctype._processed and doctype._entities.getNamedItem(name) is None:
+        doctype._entities.setNamedItem(entity)
+        if entity.notationName is None:
+          filter= self._filter
+          self._filter= None
+          self._inEntity= True
+          ents= self._domConfig.getParameter('entities')
+          self._domConfig.setParameter('entities', True)
+          buffer= self._buffer
+          self._buffer= extbuf
+          try:
+            self._Content(entity, None, FIXEDNS.copy())
+          finally:
+            self._buffer= buffer
+            self._filter= filter
+            self._inEntity= False
+            self._domConfig.setParameter('entities', ents)
+
+
+  def _AttlistD(self, doctype):
+    """ Parse attribute list declaration.
+    """
+    # Get attlist object to write attributes to. Can re-use an existing one
+    # to add attributes to a previously-declared attlist. If some declarations
+    # have not been processed must ignore this, so write to a dummy attlist
+    # we won't do anything with.
+    #
+    self._checkPE(doctype)
+    name= self._name()
+    if doctype._processed:
       attlist= doctype._attlists.getNamedItem(name)
       if attlist is None:
         attlist= doctype.createAttributeListDeclaration(name)
         doctype._attlists.setNamedItem(attlist)
     else:
       attlist= doctype.createAttributeListDeclaration(name)
-    while not self._next('>'):
-      name= self._p_name()
-      self._p_s()
+
+    # Loop over declared attributes
+    #
+    while True:
+      self._checkPE(doctype)
+      if self._match('>', stepPast= False):
+        break
+      name= self._name()
+      self._checkPE(doctype)
       typeValues= None
 
-      for ix in range(1, len(AttributeDeclaration.ATTR_NAMES)-1):
-        if self._next(AttributeDeclaration.ATTR_NAMES[ix]):
+      # Look for known attribute value type names (CDATA etc.) but do it in
+      # reverse order as a nasty hack to ensure 'NMTOKENS' is detected before
+      # the substring 'NMTOKEN' (and similarly for ID[REF[S]]). If no name
+      # found, must be an enum type.
+      #
+      for ix in range(len(AttributeDeclaration.ATTR_NAMES)-1, 0, -1):
+        if self._match(AttributeDeclaration.ATTR_NAMES[ix]):
           attributeType= ix
-          if attributeType==AttributeDeclaration.NOTATION_ATTR:
-            self._p_s()
-            typeValues= self._p_enum()
+          self._checkPE(doctype)
           break
       else:
-        if self._next('(', skip= False):
-          attributeType= AttributeDeclaration.ENUMERATION_ATTR
-          typeValues= self._p_enum()
-        else:
-          self._e('Expected AttType')
+        attributeType= AttributeDeclaration.ENUMERATION_ATTR
 
-      self._p_s()
-      if self._next('#REQUIRED'):
+      # For enumeration types, parse list of names. For notation enums, must
+      # be proper names, not just nmtokens
+      #
+      if attributeType in (
+        AttributeDeclaration.NOTATION_ATTR,
+        AttributeDeclaration.ENUMERATION_ATTR
+      ):
+        if not self._match('('):
+          self._error(self._buffer,'Expected open bracket to start value list')
+        typeValues= []
+        while True:
+          self._checkPE(doctype)
+          typeValues.append([self._nmtokens, self._name][
+            attributeType==AttributeDeclaration.NOTATION_ATTR
+          ]())
+          self._checkPE(doctype)
+          if not self._match('|'):
+            break
+        if not self._match(')'):
+          self._error('Expected close bracket to end value list')
+        self._checkPE(doctype)
+
+      # Read defaulting type.
+      #
+      if self._match('#REQUIRED'):
         defaultType= AttributeDeclaration.REQUIRED_VALUE
-      elif self._next('#IMPLIED'):
+      elif self._match('#IMPLIED'):
         defaultType= AttributeDeclaration.IMPLIED_VALUE
-      elif self._next('#FIXED'):
+      elif self._match('#FIXED'):
         defaultType= AttributeDeclaration.FIXED_VALUE
-        self._p_s()
+        self._checkPE(doctype)
       else:
         defaultType= AttributeDeclaration.DEFAULT_VALUE
+
+      # Create attribute declaration object. Add to attlist if not already
+      # declared. For attributes with default values, parse the attribute
+      # value into the childNodes.
+      #
+      attdef= doctype.createAttributeDeclaration(
+        name, attributeType, typeValues, defaultType
+      )
       if attlist.declarations.getNamedItem(name) is None:
-        attdef= doctype.createAttributeDeclaration(
-          name, attributeType, typeValues, defaultType
-        )
         attlist.declarations.setNamedItem(attdef)
       if defaultType in (
         AttributeDeclaration.FIXED_VALUE, AttributeDeclaration.DEFAULT_VALUE
       ):
-        self._parseAttributeValue(attdef, None)
-      if not self._next('>', skip= False):
-        self._p_s()
+        self._Attr(attdef, None, FIXEDNS.copy())
 
-  def _getLocation(self):
-    return (
-      string.count(self._data, '\n', 0, self._index) +1,
-      self._index-(string.rfind(self._data, '\n', 0, self._index)+1) +1
-    )
+
+  def _ElementD(self, doctype):
+    """ Parse element content declaration.
+    """
+    self._checkPE(doctype)
+    name= self._name()
+    self._checkPE(doctype)
+    elements= None
+    if self._match('EMPTY'):
+      contentType= ElementDeclaration.EMPTY_CONTENT
+    elif self._match('ANY'):
+      contentType= ElementDeclaration.ANY_CONTENT
+    else:
+      if not self._match('('):
+        self._error('Expected open bracket start content model')
+      self._checkPE(doctype)
+      if not self._match('#PCDATA'):
+        contentType= ElementDeclaration.ELEMENT_CONTENT
+        elements= self._ContentD(doctype)
+
+      else:
+        contentType= ElementDeclaration.MIXED_CONTENT
+        elements= ContentDeclaration()
+        self._checkPE(doctype)
+        while True:
+          if not self._match('|'):
+            break
+          self._checkPE(doctype)
+          elements._append(self._name())
+          self._checkPE(doctype)
+        if not self._match(')'):
+          self._error('Expected close bracket end content model')
+        if not self._match('*') and elements.length!=0:
+          self._error('Expected asterisk ending mixed content')
+
+    if doctype._processed and doctype._elements.getNamedItem(name) is None:
+      element= doctype.createElementDeclaration(name, contentType, elements)
+      doctype._elements.setNamedItem(element)
+
+
+  def _ContentD(self, doctype):
+    """ Parse (recursively) the content model in an element declaration, minus
+        the leading open bracket. Return a ContentDeclaration object.
+    """
+    elements= ContentDeclaration()
+    elements.isSequence= None
+
+    while True:
+      if self._match('('):
+        self._checkPE(doctype)
+        element= self._ContentD(doctype)
+      else:
+        element= self._name()
+        element= self._SuffixD(element)
+      elements._append(element)
+
+      self._checkPE(doctype)
+      if self._match(')'):
+        break
+      if self._match('|'):
+        sequence= False
+      elif self._match(','):
+        sequence= True
+      else:
+        self._error('Expected comma or pipe separator')
+      if elements.isSequence not in (None, sequence):
+        self._error('Cannot mix comma and pipe separators')
+      elements.isSequence= sequence
+      self._checkPE(doctype)
+    if elements.isSequence is None:
+      elements.isSequence= False
+    return self._SuffixD(elements)
+
+  def _SuffixD(self, cp):
+    """ Parse suffix that appears on content particles in element content
+         declarations. Return altered version of cp.
+    """
+    isOptional= False
+    isMultiple= False
+    if self._match('*'):
+      isOptional= True
+      isMultiple= True
+    elif self._match('+'):
+      isMultiple= True
+    elif self._match('?'):
+      isOptional= True
+    if not isinstance(cp, ContentDeclaration) and (isOptional or isMultiple):
+      c= ContentDeclaration()
+      c._append(cp)
+      cp= c
+    if isOptional:
+      cp.isOptional= True
+    if isMultiple:
+      cp.isMultiple= True
+    return cp
+
 
 # Convenience parsing functions. The default parameters for these functions
 # are slightly different than those of a standard LSParser, to emulate the
@@ -4006,7 +4381,7 @@ def parse(fileorpath, parameters= {}):
   if hasattr(fileorpath, 'read'):
     src.byteStream= fileorpath
   else:
-    src.systemId= 'file:'+urllib.pathname2url(fileorpath)
+    src.systemId= 'file:'+urllib.pathname2url(os.path.abspath(fileorpath))
   doc= parser.parse(src)
   return doc
 
@@ -4043,13 +4418,14 @@ def _DOMImplementation__createLSSerializer(self):
 # (though it is not always writable).
 #
 def _Node___get_pxdomContent(self):
-  return LSSerializer(self._ownerDocument.domConfig).writeToString(self)
+  config= DOMConfiguration(self._ownerDocument.domConfig)
+  return LSSerializer(config).writeToString(self)
 
 def _Node___set_pxdomContent(self, value):
   input= LSInput()
   input.stringData= value
   parser= LSParser(self._ownerDocument.domConfig)
-  parser.parseWithContext(input, self, LSParser.ACTION_REPLACE_CHILDREN)
+  parser.parseWithContext(input, self, LSParser.ACTION_REPLACE)
 
 
 class LSOutput(DOMObject):
@@ -4084,7 +4460,7 @@ class OutputBuffer:
       output.characterStream is None and output.byteStream is None
       and output.systemId is None
     ):
-        raise DOMErrorNoOutput(None)
+        raise NoOutputErr()
 
     # Work out which charsets to use (a) for detecting unencodable characters
     # and escaping them (and also putting in the XML declaration if there is
@@ -4095,7 +4471,7 @@ class OutputBuffer:
     if self.encoding is None and output.characterStream is None:
       self.encoding= document.inputEncoding or document.xmlEncoding
     if self.encoding is None:
-      self.encoding= nativeEncoding
+      self.encoding= NATIVECHARSET
     elif output.characterStream is None:
       self.outputEncoding= self.encoding
 
@@ -4112,13 +4488,13 @@ class OutputBuffer:
       try:
         unicode('').encode(self.encoding)
       except LookupError:
-        raise DOMErrorUnsupportedEncoding(None)
+        docment.domConfig._handleError(UnsupportedEncodingErr())
 
   def flush(self):
     """ Finish output, sending buffer contents to the nominated destination
         (optionally encoding it). In the special case where characterStream
         was 'True' return the buffer as a string, else return a success flag,
-        which is always True since we throw an exception when there is an
+        which is always True since we raise an exception when there is an
         fatal error and don't attempt to carry on.
     """
     data= self._buffer.getvalue()
@@ -4156,19 +4532,19 @@ class OutputBuffer:
           conn.request('PUT', urlparts[2], data, {
             'Content-Type': 'text/xml', 'Content-Length': str(len(data))
           })
-          status, message, headers= conn.getreply()
+          response= conn.getresponse()
           conn.close()
-          if not (status>=200 and status<300):
-            raise DOMErrorIOError(IOError(
-              'HTTP response %d %s' % (status, message)
+          if not (response.status>=200 and response.status<300):
+            raise IOErrorErr(IOError(
+              'HTTP response %d %s' % (response.status, response.reason)
             ))
           return True
         else:
-          raise DOMErrorIOError(
+          raise IOErrorErr(
             ValueError('Can\'t write to URI type %s' % urlparts[0])
           )
     except IOError, e:
-      raise DOMErrorIOError(e)
+      raise IOErrorErr(e)
 
   def setSeparator(self, separator):
     """ A separator can be set (or cleared by passing None) on the output,
@@ -4222,17 +4598,18 @@ class OutputBuffer:
 #
 class _Complainer:
   """ Holds an escaper method for OutputBuffer that just raises a given kind
-      of DOMErrorException when called back.
+      of DOMError when called back.
   """
   def __init__(self, config, node, isName= False):
     if isName:
-      self._exn= DOMErrorInvalidCharSerialized
+      self._exn= InvalidCharErr
     else:
-      self._exn= DOMErrorInvalidNameSerialized
+      self._exn= InvalidNameErr
     self._node= node
     self._domConfig= config
   def escape(self, char):
     self._domConfig._handleError(self._exn(self._node))
+    return ''
 
 class _Charreffer:
   """ Holds an escaper method that outputs a character reference, optionally
@@ -4259,9 +4636,9 @@ class _CdataSplitter:
     config= self._domConfig
     if config is not None:
       if config.getParameter('split-cdata-sections'):
-        config._handleError(DOMErrorCdataSectionSplitted(self._node))
+        config._handleError(CdataSectionsSplittedErr(self._node))
       else:
-        config._handleError(DOMErrorInvalidCharSerialized(self._node))
+        config._handleError(InvalidCharErr(self._node))
       self._domConfig= None
     return ']]>&#%d;<![CDATA[' % ord(char)
 
@@ -4289,24 +4666,18 @@ class LSSerializer(DOMObject):
       self._newLine= value
 
   def write(self, node, destination):
-    # Namespace fixup cannot (currently) be done on the fly during the
-    # serialisation process. So if this is needed, normalise a clone and
-    # output that instead of writing the original directly. 
-    #
     try:
-      if self._domConfig.getParameter('namespaces'):
-        node= node.cloneNode(True)
-        node._normalize(ns= True)
-
-      try:
-        buffer= OutputBuffer(destination, node._ownerDocument)
-      except DOMErrorException, e:
-        self._domConfig._handleError(e)
-      node._writeTo(buffer, self._domConfig, self._filter, self._newLine)
-
-      return buffer.flush()
-    except DOMErrorException, e:
-      raise SerializeErr(e)
+      buffer= OutputBuffer(destination, node._ownerDocument)
+    except DOMException, e:
+      self._domConfig._handleError(e)
+    if node.parentNode is not None:
+      namespaces= node.parentNode._getNamespaces(FIXEDNS.copy())
+    else:
+      namespaces= FIXEDNS.copy()
+    node._writeTo(
+      buffer, self._domConfig, self._filter, self._newLine, namespaces
+    )
+    return buffer.flush()
 
   def writeToString(self, node):
     destination= LSOutput()
@@ -4319,16 +4690,19 @@ class LSSerializer(DOMObject):
     return self.write(node, destination)
 
 
-def _Node___writeTo(self, destination, config, filter, newLine):
+def _Node___writeTo(self, destination, config, filter, newLine, namespaces):
   """ Markup production, for various node types. The default node behaviour is
       just to recurse to all children.
   """
   for child in self._childNodes:
-    child._writeTo(destination, config, filter, newLine)
+    child._writeTo(destination, config, filter, newLine, namespaces)
 
 
-def _Document___writeTo(self, destination, config, filter, newLine):
-  # Output XML prolog
+def _Document___writeTo(self,destination,config,filter,newLine,namespaces):
+  if config.getParameter('canonical-form') and self._xmlVersion=='1.1':
+    config._handleError(CanonicalXmlErr(self))
+
+  # Output XML preamble
   #
   if config.getParameter('xml-declaration'):
     destination.write('<?xml version="')
@@ -4338,29 +4712,22 @@ def _Document___writeTo(self, destination, config, filter, newLine):
       destination.write(destination.encoding)
     if self._xmlStandalone:
       destination.write('" standalone="yes')
-    destination.write('"?>')
-    if config.getParameter('canonical-form'):
-      destination.setSeparator(newLine)
+    destination.write('"?>\n')
   elif (self._xmlVersion not in ('1.0', None, '') or self._xmlStandalone):
-    config._handleError(DOMErrorXmlDeclarationNeeded(self))
+    config._handleError(XmlDeclarationNeededErr(self))
 
-  # If in canonical form, have to put exactly one \n between each root-level
-  # node rather than writing the same amount of whitespace as was in the
-  # original document. Also ignore doctype in this case.
+  # Put a single newline between each document-level child, as there are no
+  # whitespace nodes
   #
-  if not config.getParameter('canonical-form'):
-    Node._writeTo(self, destination, config, filter, newLine)
-  else:
-    for child in self._childNodes:
-      if child.nodeType not in (Node.TEXT_NODE, Node.DOCUMENT_TYPE_NODE):
-        child._writeTo(destination, config, filter, newLine)
-        destination.setSeparator(newLine)
+  for child in self._childNodes:
+    child._writeTo(destination, config, filter, newLine, namespaces)
+    destination.setSeparator(newLine)
 
 
-def _Element___writeTo(self, destination, config, filter, newLine):
+def _Element___writeTo(self,destination,config,filter,newLine,namespaces):
   accepted= _acceptNode(filter, self)
   if accepted==NodeFilter.FILTER_SKIP:
-    NamedNodeNS._writeTo(self, destination, config, filter, newLine)
+    NamedNodeNS._writeTo(self,destination,config,filter,newLine,namespaces)
   if accepted!=NodeFilter.FILTER_ACCEPT:
     return
 
@@ -4369,12 +4736,44 @@ def _Element___writeTo(self, destination, config, filter, newLine):
   destination.write(config._cnorm(self.tagName, self), escaper)
   destination.setSeparator(' ')
 
-  attrs= self._attributes
+  # Get list of attributes. If doing namespace fixup at output stage, get a
+  # list of namespace declarations to add/replace to the list, and remember
+  # any attributes whose prefixes are to be changed.
+  #
+  attrs= self._attributes._list[:]
+  newspaces= namespaces.copy()
+  reprefix= []
+  if config.getParameter('namespaces'):
+    create, reprefix= self._getFixups(newspaces)
+    for prefix, namespaceURI in create:
+      name= 'xmlns'
+      if prefix is not None:
+        name= name+':'+prefix
+      for attr in attrs:
+        if attr.nodeName==name:
+          attrs.remove(attr)
+          break
+      attr= self._ownerDocument.createAttributeNS(NSNS, name)
+      attr.value= namespaceURI or ''
+      attrs.append(attr)
+      newspaces[prefix]= namespaceURI
+
+  # If outputting canonically, put the attribute list in order.
+  #
   if config.getParameter('canonical-form'):
     attrs= attrs._list[:]
-    attrs.sort()
+    attrs.sort(_canonicalAttrSort)
+
+  # Write attributes. Where we remembered that a changed prefix would be
+  # required, ask Attr._writeTo to override the actual prefix.
+  #
   for attr in attrs:
-    attr._writeTo(destination, config, filter, newLine)
+    for pattr, prefix in reprefix:
+      if attr is pattr:
+        attr._writeTo(destination,config,filter,newLine,namespaces,prefix)
+        break
+    else:
+      attr._writeTo(destination, config, filter, newLine, namespaces)
     destination.setSeparator(' ')
   destination.setSeparator(None)
 
@@ -4390,10 +4789,14 @@ def _Element___writeTo(self, destination, config, filter, newLine):
         self._childNodes[0].nodeType==Node.TEXT_NODE and
         '\n' not in self._childNodes[0].data
       ):
-        NamedNodeNS._writeTo(self, destination, config, filter, newLine)
+        NamedNodeNS._writeTo(
+          self, destination, config, filter, newLine, namespaces
+        )
       else:
         destination.write(newLine+'  ')
-        NamedNodeNS._writeTo(self, destination, config, filter, newLine+'  ')
+        NamedNodeNS._writeTo(
+          self, destination, config, filter, newLine+'  ', namespaces
+        )
         destination.write(newLine)
 
     destination.write('</')
@@ -4401,7 +4804,9 @@ def _Element___writeTo(self, destination, config, filter, newLine):
     destination.write('>')
 
 
-def _Attr___writeTo(self, destination, config, filter, newLine):
+def _Attr___writeTo(
+  self, destination, config, filter, newLine, namespaces, prefix= NONS
+):
   # Apply LSSerializerFiltering to non-namespace-declaring attributes only
   #
   isNsDecl= self.namespaceURI==NSNS and config.getParameter('namespaces')
@@ -4423,11 +4828,17 @@ def _Attr___writeTo(self, destination, config, filter, newLine):
     if self.value==(value or ''):
       return
 
+  # Output attribute name, with possible overridden prefix
+  #
+  name= self.nodeName
+  if prefix is not NONS:
+    name= self.localName
+    if prefix is not None:
+      name= prefix+':'+name
+  destination.write(config._cnorm(name, self),_Complainer(config, self, True))
+
   # In canonical form mode, output actual attribute value (suitably encoded)
   #
-  destination.write(config._cnorm(self.name, self),
-    _Complainer(config, self, True)
-  )
   destination.write('="')
   if config.getParameter('canonical-form'):
     destination.write( r(r(r(r(r(r(self.value, '&', '&amp;'),
@@ -4435,21 +4846,22 @@ def _Attr___writeTo(self, destination, config, filter, newLine):
       _Charreffer(True)
     )
 
-  # Otherwise, iterate into children, but replacing " marks
+  # Otherwise, iterate into children, but replacing " marks. Don't filter
+  # children.
   #
   else:
     for child in self._childNodes:
-      child._writeTo(destination, config, filter, '&#10;', attr= True)
+      child._writeTo(destination, config, None,'&#10;', namespaces, attr=True)
   destination.write('"')
 
 
-def _Comment___writeTo(self, destination, config, filter, newLine):
+def _Comment___writeTo(self,destination,config,filter,newLine,namespaces):
   if (not config.getParameter('comments') or
     _acceptNode(filter, self)!=NodeFilter.FILTER_ACCEPT
   ):
     return
   if self.data[-1:]=='-' or string.find(self.data, '--')!=-1:
-    config._handleError(DOMErrorInvalidCharSerialized(self))
+    config._handleError(InvalidCharErr(self))
   destination.write('<!--')
   pretty= config.getParameter('format-pretty-print')
   if pretty and '\n' in string.strip(self.data):
@@ -4463,30 +4875,33 @@ def _Comment___writeTo(self, destination, config, filter, newLine):
     destination.write(r(self.data, '\n', newLine), _Complainer(config, self))
   destination.write('-->')
 
-def _Text___writeTo(self, destination, config, filter, newLine, attr= False):
+def _Text___writeTo(
+  self, destination, config, filter, newLine, namespaces, attr= False
+):
   if (
     not config.getParameter('element-content-whitespace')
-    and self.isElementContentWhitespace(config)
+    and self._get_isElementContentWhitespace(config)
   ) or _acceptNode(filter, self)!=NodeFilter.FILTER_ACCEPT:
     return
 
   m= r(r(config._cnorm(self.data, self), '&', '&amp;'), '<', '&lt;')
-  if config.getParameter('canonical-form'):
-    destination.write(r(r(r(r(m,
-      '>', '&gt;'), '\r', '&#xD;'), '\t', '&#x9'), '\n', newLine),
+  if config.getParameter('canonical-form'): # attr always false here
+    destination.write(r(r(r(m, '>', '&gt;'), '\r', '&#xD;'), '\n', newLine),
       _Charreffer(True)
     )
   else:
     if attr:
-      m= r(m, '"', '&quot;')
-    m= r(r(r(m, ']]>', ']]&gt;'), '\r', '&#13;'), '\t', '&#9;')
+      m= r(r(m, '"', '&quot;'), '\t', '&#9;')
+    m= r(r(m, ']]>', ']]&gt;'), '\r', '&#13;')
     if config.getParameter('format-pretty-print'):
       m= string.join(map(string.strip, string.split(m, '\n')), newLine)
     destination.write(m, _Charreffer())
 
-def _CDATASection___writeTo(self, destination, config, filter, newLine):
+def _CDATASection___writeTo(
+  self, destination, config, filter, newLine, namespaces
+):
   if not config.getParameter('cdata-sections'):
-    return Text._writeTo(self, destination, config, filter, newLine)
+    return Text._writeTo(self,destination,config,filter,newLine,namespaces)
   if (
     not config.getParameter('element-content-whitespace')
     and self.isElementContentWhitespace(config)
@@ -4499,14 +4914,16 @@ def _CDATASection___writeTo(self, destination, config, filter, newLine):
   if string.find(m, ']]>')!=-1 or string.find(m, '\r')!=-1:
     escaper.escape(' ')
     destination.write(r(r(r(m,
-      ']]>',']]>]]&gt;<![CDATA['), '\r',']]>&#13;<![CDATA['), '\n', newLine),
+      ']]>',']]]]><![CDATA[>'), '\r',']]>&#13;<![CDATA['), '\n', newLine),
       escaper
     )
   else:
     destination.write(r(m, '\n', newLine), escaper)
   destination.write(']]>')
 
-def _ProcessingInstruction___writeTo(self,destination,config,filter,newLine):
+def _ProcessingInstruction___writeTo(
+  self, destination, config, filter, newLine, namespaces
+):
   if _acceptNode(filter, self)!=NodeFilter.FILTER_ACCEPT:
     return
   destination.write('<?')
@@ -4514,18 +4931,26 @@ def _ProcessingInstruction___writeTo(self,destination,config,filter,newLine):
   if self._data!='':
     destination.write(' ')
     if string.find(self._data, '?>')!=-1 or string.find(self._data, '\r')!=-1:
-      config._handleError(DOMErrorInvalidCharSerialized(self))
+      config._handleError(InvalidCharErr(self))
     destination.write(r(config._cnorm(self._data, self), '\n', newLine),
       _Complainer(config, self)
     )
   destination.write('?>')
 
 def _EntityReference___writeTo(self,
-  destination, config, filter, newLine, attr= False
+  destination, config, filter, newLine, namespaces, attr= False
 ):
+  # If entities parameter is false, skip all bound available entity references
+  # otherwise pass to filter as normal
+  #
+  accepted= NodeFilter.FILTER_ACCEPT
   if not config.getParameter('entities'):
-    accepted= NodeFilter.FILTER_SKIP
-  else:
+    doctype= self._ownerDocument.doctype
+    if doctype is not None:
+      entity= doctype.entities.getNamedItem(self.nodeName)
+      if entity is not None and entity.pxdomAvailable:
+        accepted= NodeFilter.FILTER_SKIP
+  if accepted==NodeFilter.FILTER_ACCEPT:
     accepted= _acceptNode(filter, self)
 
   if accepted==NodeFilter.FILTER_ACCEPT:
@@ -4538,12 +4963,14 @@ def _EntityReference___writeTo(self,
     if attr:
       for child in self._childNodes:
         if child.nodeType not in (Node.ENTITY_REFERENCE_NODE, Node.TEXT_NODE):
-          config._handleError(DOMErrorInvalidCharSerialized(self))
-        child._writeTo(destination, config, filter, newLine, True)
+          config._handleError(InvalidCharErr(self))
+        child._writeTo(destination,config,filter,newLine,namespaces,attr=True)
     else:
-      NamedNode._writeTo(self, destination, config, filter, newLine)
+      NamedNode._writeTo(self,destination,config,filter,newLine,namespaces)
 
-def _DocumentType___writeTo(self, destination, config, filter, newLine):
+def _DocumentType___writeTo(
+  self, destination, config, filter, newLine, namespaces
+):
   destination.write('<!DOCTYPE ')
   destination.write(
     config._cnorm(self._nodeName, self),
@@ -4573,233 +5000,232 @@ def _DocumentType___writeTo(self, destination, config, filter, newLine):
 # ============================================================================
 
 class DOMException(Exception):
+  """ The pxdom DOMException implements the interfaces DOMException, DOMError
+      and LSException. There are _get methods, but the properties are read
+      directly read and not read-only, as Exception behaves oddly when its
+      getter/setter is overridden.
+  """
   [INDEX_SIZE_ERR,DOMSTRING_SIZE_ERR,HIERARCHY_REQUEST_ERR,WRONG_DOCUMENT_ERR,
   INVALID_CHARACTER_ERR,NO_DATA_ALLOWED_ERR,NO_MODIFICATION_ALLOWED_ERR,
   NOT_FOUND_ERR,NOT_SUPPORTED_ERR,INUSE_ATTRIBUTE_ERR,INVALID_STATE_ERR,
   SYNTAX_ERR,INVALID_MODIFICATION_ERR,NAMESPACE_ERR,INVALID_ACCESS_ERR,
   VALIDATION_ERR, TYPE_MISMATCH_ERR
   ]= range(1, 18)
-  def _get_code(self):
-    return self.code
-
-class IndexSizeErr(DOMException):
-  def __init__(self, data, index):
-    DOMException.__init__(self)
-    self._data= data
-    self._index= index
-  def __str__(self):
-    return 'index %s into data of length %s' % (self._index, len(self._data))
-  code= DOMException.INDEX_SIZE_ERR
-
-class HierarchyRequestErr(DOMException):
-  def __init__(self, child, parent):
-    DOMException.__init__(self)
-    self._child= child
-    self._parent= parent
-  def __str__(self):
-    if self._child.nodeType not in self._parent._childTypes:
-      return 'putting %s inside %s' % (
-        self._child.__class__.__name__, self._parent.__class__.__name__
-      )
-    elif self._parent.nodeType==Node.DOCUMENT_NODE:
-      return 'putting extra %s in Document' % self._child.__class__.__name__
-    else:
-      return 'putting %s inside itself' % self._parent.__class__.__name__
-  code= DOMException.HIERARCHY_REQUEST_ERR
-
-class WrongDocumentErr(DOMException):
-  def __init__(self, child, document):
-    DOMException.__init__(self)
-    self._child= child
-    self._document= document
-  def __str__(self):
-    return 'putting %s into foreign Document' % self._child.__class__.__name__
-  code= DOMException.WRONG_DOCUMENT_ERR
-
-class InvalidCharacterErr(DOMException):
-  def __init__(self, name, char):
-    DOMException.__init__(self)
-    self._name= name
-    self._char= char
-  def __str__(self):
-    return '\'%s\' in \'%s\'' % (self._char, self._name)
-  code= DOMException.INVALID_CHARACTER_ERR
-
-class NoModificationAllowedErr(DOMException):
-  def __init__(self, object, key):
-    DOMException.__init__(self)
-    self._object= object
-    self._key= key
-  def __str__(self):
-    return '%s.%s read-only' % (self._object.__class__.__name__, self._key)
-  code= DOMException.NO_MODIFICATION_ALLOWED_ERR
-
-class NamespaceErr(DOMException):
-  def __init__(self, qualifiedName, namespaceURI):
-    DOMException.__init__(self)
-    self._qualifiedName= qualifiedName
-    self._namespaceURI= namespaceURI
-  def __str__(self):
-    if _splitName(self._qualifiedName)[1] is None:
-      return '\'%s\' is not a qualifiedName' % self._qualifiedName
-    return '\'%s\' can\'t be in namespace %s' % (
-      self._qualifiedName, str(self._namespaceURI)
-    )
-  code= DOMException.NAMESPACE_ERR
-
-class NotFoundErr(DOMException):
-  def __init__(self, object, namespaceURI, localName):
-    DOMException.__init__(self)
-    self._object= object
-    self._namespaceURI= namespaceURI
-    self._localName= localName
-  def __str__(self):
-    if self._namespaceURI not in (None, NONS):
-      return '%s in %s' % (self._localName, self._object.__class__.__name__)
-    else:
-      return '%s (ns: %s) in %s' % (
-        self._localName, self._namespaceURI, self._object.__class__.__name__
-      )
-  code= DOMException.NOT_FOUND_ERR
-
-class NotSupportedErr(DOMException):
-  def __init__(self, object, name):
-    DOMException.__init__(self)
-    self._object= object
-    self._name= name
-  def __str__(self):
-    return '%s.%s' % (self._object.__class__.__name__, self._name)
-  code= DOMException.NOT_SUPPORTED_ERR
-
-class InuseAttributeErr(DOMException):
-  def __init__(self, attr):
-    DOMException.__init__(self)
-    self._attr= attr
-  def __str__(self):
-    return 'attr %s in use' % self._attr.name
-  code= DOMException.INUSE_ATTRIBUTE_ERR
-
-
-class DOMError(DOMObject):
-  [SEVERITY_WARNING,SEVERITY_ERROR,SEVERITY_FATAL_ERROR
-  ]= range(1, 4)
-  def __init__(self, severity, message, type, node):
-    DOMObject.__init__(self)
-    self._severity= severity
-    self._message= message
-    self._type= type
-    self._relatedData= node
-  def _get_severity(self):
-    return self._severity
-  def _get_message(self):
-    return self._message
-  def _get_type(self):
-    return self._type
-  def _get_relatedException(self):
-    return None
-  def _get_relatedData(self):
-    return self._relatedData
-  def _get_location(self):
-    if self._relatedData is None:
-      return DOMLocator()
-    return self._relatedData.pxdomLocation
-
-class DOMErrorException(Exception):
-  def __init__(self, node):
-    Exception.__init__(self)
-    self.node= node
-  def __str__(self):
-    return '%s \'%s\'' % (
-      ['', 'Warning', 'Error', 'Fatal error'][self.severity], self.type
-    )
-  def __repr__(self):
-    return str(self)
-
-class DOMErrorWarning(DOMErrorException):
-  severity= DOMError.SEVERITY_WARNING
-  def allowContinue(self, cont):
-    return [cont, True][cont is None]
-class DOMErrorError(DOMErrorException):
-  severity= DOMError.SEVERITY_ERROR
-  def allowContinue(self, cont):
-    return [cont, False][cont is None]
-class DOMErrorFatal(DOMErrorException):
-  severity= DOMError.SEVERITY_FATAL_ERROR
-  def allowContinue(self, cont):
-    return False
-
-class DOMErrorNoOutput(DOMErrorFatal):
-  type= 'no-output-specified'
-class DOMErrorUnsupportedType(DOMErrorFatal):
-  type= 'unsupported-media-type'
-class DOMErrorUnsupportedEncoding(DOMErrorFatal):
-  type= 'unsupported-encoding'
-class DOMErrorUnboundNamespaceInEntity(DOMErrorWarning):
-  type= 'unbound-namespace-in-entity'
-class DOMErrorXmlDeclarationNeeded(DOMErrorWarning):
-  type= 'xml-declaration-needed'
-class DOMErrorDoctypeNotAllowed(DOMErrorFatal):
-  type= 'doctype-not-allowed'
-class DOMErrorCdataSectionSplitted(DOMErrorWarning):
-  type= 'cdata-section-splitted'
-class DOMErrorInvalidChar(DOMErrorError):
-  type= 'wf-invalid-character'
-class DOMErrorInvalidCharSerialized(DOMErrorFatal):
-  type= 'wf-invalid-character'
-class DOMErrorInvalidNameSerialized(DOMErrorFatal):
-  type= 'wf-invalid-character-in-node-name'
-class DOMErrorNoInput(DOMErrorFatal):
-  type= 'no-input-specified'
-class DOMErrorCheckCharacterNormalizationFailure(DOMError):
-  type= 'check-character-normalization-failure'
-
-class DOMErrorIOError(DOMErrorFatal):
-  type= 'pxdom-uri-unreadable'
-  def __init__(self, e):
-    DOMErrorFatal.__init__(self, None)
-    self.desc= str(e)
-  def __str__(self):
-    return '%s DOMError due to %s' % (self.type, self.desc)
-
-class ParseError(DOMErrorFatal):
-  type= 'pxdom-parse-error'
-  def __init__(self, parser, message):
-    DOMErrorFatal.__init__(self, None) 
-    self._message= message
-    self._parser= parser
-    line, column= parser._getLocation()
-    self.location= DOMLocator(None, line, column, parser._buffer.uri)
-
-  def __str__(self):
-    index= self._parser._index
-    if index<30:
-      pre= self._parser._data[:index]
-    else:
-      pre= self._parser._data[index-30:index]
-    post= self._parser._data[index:index+30]
-    pre= string.split(pre, '\n')[-1]
-    post= string.split(post, '\n')[0]
-    pre= string.join(map(lambda c: (c, '?')[ord(c)>=128], pre), '')
-    post= string.join(map(lambda c: (c, '?')[ord(c)>=128], post), '')
-    line, column= self.location.lineNumber, self.location.columnNumber
-    return 'XML parsing error: %s, around line %s, char %s:\n%s%s\n%s^' % (
-      self._message, line, column, pre, post, ' '*len(pre)
-    )
-
-# LSExceptions wrap a DOMErrorException when returned from parse and serialise
-# methods.
-#
-class LSException(Exception):
   [PARSE_ERR, SERIALIZE_ERR
   ]= range(81, 83)
-  def __init__(self, e):
-    self.e= e
+  [SEVERITY_WARNING,SEVERITY_ERROR,SEVERITY_FATAL_ERROR
+  ]= range(1, 4)
+  SEVERITY_NAMES= ('', 'Warning', 'Error', 'Fatal error')
+
+  code= 0
+  type= 'pxdom-exception'
+  severity= SEVERITY_FATAL_ERROR
+  message= 'pxdom exception'
+  relatedData= None
+  location= None
+
+  def __init__(self, related= None):
+    if related is not None:
+      self.relatedData= related
+      self.location= related.pxdomLocation
+    self.relatedException= self
+    self.message= '%s \'%s\'' % (self.SEVERITY_NAMES[self.severity], self.type)
   def __str__(self):
-    return str(self.e)
-class ParseErr(LSException):
-  code= LSException.PARSE_ERR
-class SerializeErr(LSException):
-  code= LSException.SERIALIZE_ERR
+    return self.message
+  def __repr__(self):
+    return self.message
+
+  def _get_code(self):
+    return self.code
+  def _get_relatedData(self):
+    return self.relatedData
+  def _get_location(self):
+    return self.location
+
+  def allowContinue(self, cont):
+    if self.severity==DOMException.SEVERITY_WARNING:
+      return [cont, True][cont is None]
+    elif self.severity==DOMException.SEVERITY_ERROR:
+      return [cont, False][cont is None]
+    else:
+      return False
+
+
+# Traditional DOMExceptions
+#
+class IndexSizeErr(DOMException):
+  code= DOMException.INDEX_SIZE_ERR
+  def __init__(self, data, index):
+    DOMException.__init__(self)
+    self.message= 'index %s in data of length %s' % (index, len(data))
+
+class HierarchyRequestErr(DOMException):
+  code= DOMException.HIERARCHY_REQUEST_ERR
+  def __init__(self, child, parent):
+    DOMException.__init__(self)
+    if child.nodeType not in parent._childTypes:
+      self.message= 'putting %s inside %s' % (
+        child.__class__.__name__, parent.__class__.__name__
+      )
+    elif parent.nodeType==Node.DOCUMENT_NODE:
+      self.message= 'putting extra %s in Document' % child.__class__.__name__
+    else:
+      self.message= 'putting %s inside itself' % parent.__class__.__name__
+
+class WrongDocumentErr(DOMException):
+  code= DOMException.WRONG_DOCUMENT_ERR
+  def __init__(self, child, document):
+    DOMException.__init__(self)
+    self.message= '%s from foreign Document' % child.__class__.__name__
+
+class InvalidCharacterErr(DOMException):
+  code= DOMException.INVALID_CHARACTER_ERR
+  def __init__(self, name, char):
+    DOMException.__init__(self)
+    self.message= '\'%s\' in \'%s\'' % (char, name)
+
+class NoModificationAllowedErr(DOMException):
+  code= DOMException.NO_MODIFICATION_ALLOWED_ERR
+  def __init__(self, obj, key):
+    DOMException.__init__(self)
+    self.message= '%s.%s read-only' % (obj.__class__.__name__, key)
+
+class NamespaceErr(DOMException):
+  code= DOMException.NAMESPACE_ERR
+  def __init__(self, qualifiedName, namespaceURI):
+    DOMException.__init__(self)
+    if _splitName(qualifiedName)[1] is None:
+      self.message= '\'%s\' is not a qualifiedName' % qualifiedName
+    else:
+      self.message= '\'%s\' can\'t be in namespace %s' % (
+      qualifiedName, str(namespaceURI)
+    )
+
+class NotFoundErr(DOMException):
+  code= DOMException.NOT_FOUND_ERR
+  def __init__(self, obj, namespaceURI, localName):
+    DOMException.__init__(self)
+    if namespaceURI not in (None, NONS):
+      self.message= '%s in %s' % (localName, obj.__class__.__name__)
+    else:
+      self.message= '%s (ns: %s) in %s' % (
+        localName, namespaceURI, obj.__class__.__name__
+      )
+
+class NotSupportedErr(DOMException):
+  code= DOMException.NOT_SUPPORTED_ERR
+  def __init__(self, obj, name):
+    DOMException.__init__(self)
+    self.message= '%s.%s' % (obj.__class__.__name__, name)
+
+class InuseAttributeErr(DOMException):
+  code= DOMException.INUSE_ATTRIBUTE_ERR
+  def __init__(self, attr):
+    DOMException.__init__(self)
+    self.message= 'attr %s in use' % attr.name
+
+
+# Serious parsing problems
+#
+class IOErrorErr(DOMException):
+  code= DOMException.PARSE_ERR
+  type= 'pxdom-uri-unreadable'
+  def __init__(self, e):
+    DOMException.__init__(self)
+    self.message= 'pxdom could not read resource: '+str(e)
+
+class ParseErr(DOMException):
+  code= DOMException.PARSE_ERR
+  type= 'pxdom-parse-error'
+  def __init__(self, buffer, message):
+    DOMException.__init__(self)
+    self.message= message
+    self.buffer= buffer
+    line, column= buffer.getLocation()
+    self.location= DOMLocator(None, line, column, buffer.uri)
+  def __str__(self):
+    LEE= 30
+    ch= self.buffer.chars
+    ix= self.buffer.index
+    pre= string.split(ch[max(ix-LEE, 0):ix], '\n')[-1]
+    post= string.split(ch[ix:min(ix+LEE, len(ch))], '\n')[0]
+    pre= string.join(filter(lambda c: ord(c)<127, pre), '')
+    post= string.join(filter(lambda c: ord(c)<127, post), '')
+    line, column= self.location.lineNumber, self.location.columnNumber
+    return 'XML parsing error: %s\naround line %s char %s of %s:\n%s%s\n%s^'%(
+      self.message, line, column, self.buffer.uri, pre, post, ' '*len(pre)
+    )
+
+# Trivial DOMErrors
+#
+class UnsupportedTypeErr(DOMException):
+  code= DOMException.PARSE_ERR
+  type= 'unsupported-media-type'
+class UnsupportedEncodingErr(DOMException):
+  code= DOMException.PARSE_ERR
+  type= 'unsupported-encoding'
+class DoctypeNotAllowedErr(DOMException):
+  code= DOMException.PARSE_ERR
+  type= 'doctype-not-allowed'
+class NoInputErr(DOMException):
+  code= DOMException.PARSE_ERR
+  type= 'no-input-specified'
+class NoOutputErr(DOMException):
+  code= DOMException.SERIALIZE_ERR
+  type= 'no-output-specified'
+class CanonicalXmlErr(DOMException):
+  code= DOMException.SERIALIZE_ERR
+  type= 'pxdom-xml-1.1-cannot-be-canonicalised'
+class InvalidNameErr(DOMException):
+  code= DOMException.SERIALIZE_ERR
+  type= 'wf-invalid-character-in-node-name'
+
+class InvalidCharErr(DOMException):
+  code= DOMException.SERIALIZE_ERR
+  type= 'wf-invalid-character'
+  severity= DOMException.SEVERITY_ERROR
+class InvalidAttrErr(DOMException):
+  code= DOMException.PARSE_ERR
+  type= 'wf-invalid-character'
+  severity= DOMException.SEVERITY_ERROR
+class CheckNormErr(DOMException):
+  type= 'check-character-normalization-failure'
+  severity= DOMException.SEVERITY_ERROR
+  def __init__(self, node, isParse):
+    DOMException.__init__(self, node)
+    self.code= [DOMException.SERIALIZE_ERR, DOMException.PARSE_ERR][isParse]
+
+class PIBaseURILost(DOMException):
+  code= DOMException.PARSE_ERR
+  type= 'pi-base-uri-not-preserved'
+  severity= DOMException.SEVERITY_WARNING
+class XmlDeclarationNeededErr(DOMException):
+  code= DOMException.SERIALIZE_ERR
+  type= 'xml-declaration-needed'
+  severity= DOMException.SEVERITY_WARNING
+class CdataSectionsSplittedErr(DOMException):
+  code= DOMException.SERIALIZE_ERR
+  type= 'cdata-sections-splitted'
+  severity= DOMException.SEVERITY_WARNING
+class UnboundNSErr(DOMException):
+  code= DOMException.PARSE_ERR
+  severity= DOMException.SEVERITY_WARNING
+  def __init__(self, node, isEntity):
+    self.type= [
+      'pxdom-unbound-namespace', 'unbound-namespace-in-entity'
+    ][isEntity]
+    DOMException.__init__(self, node)
+
+# Spec requires that this DOMError is severity ERROR, however it makes no
+# sense to stop processing due to Level 1 node, so treat it as if it were a
+# WARNING.
+#
+class Level1NodeErr(DOMException):
+  code= DOMException.SERIALIZE_ERR
+  type= 'pxdom-non-namespace-node-encountered'
+  severity= DOMException.SEVERITY_ERROR
+  def allowContinue(self, cont):
+    return [cont, True][cont is None]
 
 
 # END. Fix up classes.
