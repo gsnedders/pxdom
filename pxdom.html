@@ -1,25 +1,26 @@
 <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/xhtml1-strict.dtd">
 <html xmlns="http://www.w3.org/1999/xhtml"><head>
-  <title> pxdom 1.1 documentation </title>
+  <title> pxdom 1.2 documentation </title>
   <link rel="stylesheet" href="/style/pxtl.css" />
 </head><body>
   <h1>pxdom</h1>
   <div id="subhead">
-    pxdom 1.1 <br />
+    pxdom 1.2 <br />
     A Python DOM implementation
   </div>
   <p id="nav">
     <a href="http://www.w3.org/DOM/DOMTR#dom3"><span>W3C DOM specs</span></a>
   </p>
   <p>
-    pxdom is a W3C DOM Level 3 implementation with Python and OMG-style
-    (_get/_set) bindings. All features described in the Core and LS Recommendations
-    are supported, with the following exceptions:
+    pxdom is a W3C DOM Level 3 implementation for XML 1.0/1.1 with/without
+    namespaces, using Python and OMG-style (_get/_set) bindings. All features
+    described in the Core and LS Recommendations are supported, with the
+    following exceptions:
   </p>
   <ul>
     <li> validation; </li>
     <li> asynchronous LSParsers; </li>
-    <li> full checking for disallowed Unicode characters in node names. </li>
+    <li> name character checking is not rigorous for XML 1.0. </li>
   </ul>
   <p>
     pxdom runs on Python 1.5.2 or later, but certain features are dependent on Python version:
@@ -38,10 +39,8 @@
   <p>
     pxdom can also be included and imported as a submodule of another package.
     This is a good strategy if you wish to distribute a DOM-based application without
-    having to worry about the version of Python or other XML tools installed.
-  </p>
-  <p>
-    The only dependencies are the standard library string-handling and
+    having to worry about the versions of Python and/or PyXML installed on users&#8217
+    machines; the only dependencies are the standard library string-handling and
     URL-related modules.
   </p>
 
@@ -57,9 +56,9 @@
     doc= parser.parseURI('file:///f|/data/doc.xml')
   </code></div></blockquote>
   <p>
-    For more on using DOM Level 3 Load to create documents from various
+    For more on using DOM Level 3 Load features to create documents from various
     sources, see the <a href="http://www.w3.org/TR/DOM-Level-3-LS"><span>DOM Level
-    3 Load/Save</span></a> specification.
+    3 LS</span></a> specification.
   </p>
   <p>
     Alternatively, the pxdom module offers the convenience functions
@@ -106,7 +105,7 @@
   </code></div></blockquote>
   <p>
     (Of course, this usage would no longer be minidom-compatible.)
-    See the DOM 3 Core and Load/Save specifications for more
+    See the DOM 3 Core and LS specifications for more
     <code class="py">DOMConfiguration</code> parameters.
   </p>
 
@@ -190,6 +189,40 @@
     but pxdom allows this to be turned off if unwanted.
   </p>
 
+  <h4> pxdom-reset-identity </h4>
+  <p>
+    Applies to: normalisation. Default: True.
+  </p>
+  <p>
+    Dictates whether attributes should have their user-specified-IDness (as
+    set by the setAttributeId etc. methods) reset to false during document
+    normalisation.
+  </p>
+  <p>
+    By default, matching the DOM specification, this does occur,
+    but pxdom allows this to be turned off if unwanted.
+  </p>
+
+  <h4> pxdom-preserve-base-uri </h4>
+  <p>
+    Applies to: parsing, normalisation, serialisation. Default: True.
+  </p>
+  <p>
+    When enabled, pxdom attempts to preserve the base URI context whenever
+    a node that changes base URI is replaced by its contents. This can happen when
+    an element with an <code class="xml">xml:base</code> attribute is SKIPped
+    by a DOM 3 LS filter, or when an entity reference with a different base URI to its
+    parent is flattened.
+  </p>
+  <p>
+    By default, matching the DOM specification, base URIs are preserved. However,
+    the extra <code class="xml">xml:base</code> attributes added to child elements
+    may be unwanted if you are working with entities (especially external entities)
+    but do not wish to use XML Base, so pxdom allows it to be turned off. If
+    you do so, the DOMError warning &#8216;pi-base-uri-lost&#8217; will also not be
+    generated.
+  </p>
+
   <h4> pxdom-assume-element-content </h4>
   <p>
     Applies to: parsing, normalisation, serialisation, isElementContentWhitespace.
@@ -201,14 +234,14 @@
     only defined in the DTD external subset, which might have been omitted or not read.
   </p>
   <p>
-    Normally, following the infoset specification, pxdom will guess that elements with unknown
+    Normally, following the XML Information Set specification, pxdom will guess that elements with unknown
     content models do not contain &#8216;element content&#8217; &#8212; so
     <code class="py">Text.isElementContentWhitespace</code> will always return
     <code class="py">False</code> for elements not mentioned in the DOCTYPE internal subset.
   </p>
   <p>
     However, if the DOMConfiguration parameter &#8216;pxdom-assume-element-content&#8217;
-    is set to a true value, it will guess that unknown elements <em>do</em> contain element content,
+    is True, it will guess that unknown elements <em>do</em> contain element content,
     and so whitespace nodes inside them <em>will</em> be &#8216;element content whitespace&#8217;
     (often referred to as &#8216;ignorable whitespace&#8217;).
   </p>
@@ -228,6 +261,9 @@
   <h4> Node.pxdomLocation </h4>
   <p>
     Read-only property giving a DOM Level 3 DOMLocator object for any Node.
+    If the Node was created by a parsing operation this will reveal the file and
+    row/column number in which the node was found - particularly useful for
+    error-reporting purposes.
   </p>
 
   <h4> Node.pxdomContent </h4>
@@ -324,7 +360,59 @@
     property holds any text and/or entity reference nodes that make up the default value.
   </p>
 
-  <h2> Changelog </h2>
+  <h2 id="changes"> Changelog </h2>
+  <h3> Updates from 1.1 to 1.2 </h3>
+  <ul>
+    <li>
+      Redid entity reference parse/normalise/serialise operations, hopefully resulting in more
+      consistent results in the face of combinations of text node normalisation, NodeFilter SKIPping
+      and baseURI loss.
+    </li>
+    <li>
+      Fixed typo in OutputBuffer causing NameError to be raised instead of UnsupportedEncodingErr
+      with DOMError handling, if an unknown encoding is used (thanks to: Andrew Johnson)
+    </li>
+    <li>
+      Added pxdom-preserve-base-uri parameter to control the baseURI preservation that now
+      also works with element skipping and normalisation. xml:base attributes are now added as
+      non-specified Attrs, similar to default attributes.
+    </li>
+    <li>
+      Redid node name character handling to cope more gracefully with narrow strings and
+      apply the XML 1.1 restrictions on what Unicode characters can be in a node name.
+      (The additional restrictions of XML 1.0 are not enforced, largely because its character
+      model is an insanity). Updated parsing and serialisation of character references to
+      cope with characters outside the Basic Multilingual Plane in &#8216;narrow&#8217;
+      (UTF-16) Python builds.
+    </li>
+    <li>
+      Optimised away an order-N-squared method in LSParser, resulting in
+      faster &#8212; though still slow, obv. &#8212; parse times for long documents (eg. 10x
+      speedup for the commonly-used test file ot.xml). (Hat tip: Frederik Lundh.)
+    </li>
+    <li>
+      Changed isID property to conform to new interpretation of spec: reading Attr.isID
+      returns True if the attribute has schema-determined-IDness <em>or</em>
+      user-determined-IDness, but setting it (through the setAttributeId etc. methods) only affects the
+      user-determined-IDness; xml:id is interpreted as part of
+      schema-determined-IDness. Added new configuration parameter
+      pxdom-reset-identity to allow the removal of user-determined IDness on
+      normalisation to be disabled.
+    </li>
+    <li>
+      Fixed namespace undeclarations (<code class="xml">xmlns:something=""</code>)
+      causing namespaceURIs to become empty strings instead of unbound/null at parse-time.
+      Fixed namespace fixup to stop extra redundant declarations being added.
+    </li>
+    <li>
+      Fixed stupid DTD-parsing bugs that crept into 1.1 before release without tripping the
+      Test Suite. When pxdom-resolve-resources was False, external general entities could
+      cause errors, and INCLUDE sections were broken.
+    </li>
+    <li>
+      Added trivial repr functions so Nodes are easier to read.
+    </li>
+  </ul>
   <h3> Updates from 1.0 to 1.1 </h3>
   <ul>
     <li>
@@ -384,7 +472,7 @@
       attempt to rename a document.
     </li>
     <li>
-      Fixed insertBefore/replaceChild is used with the same node for both parameters
+      Fixed insertBefore/replaceChild used with the same node for both parameters
       following discussion on www-dom list, to do the sensible-but-not-required thing
       instead of throwing an embarrassingly inaccurate exception.
     </li>
@@ -467,7 +555,7 @@
     <li> Allow empty string to be passed in to namespaceURI arguments, meaning same as None. </li>
     <li> Added NODE_ADOPTED UserDataHandler event, compliance fixes to AdoptNode (ents, default attrs). </li>
     <li> Added DOMConfig.parameterNameList. </li>
-    <li> Added minidom-style NamedNodeMap dictionary accessors for compatibility (hat tip: Paul Boddie). </li>
+    <li> Added minidom-style NamedNodeMap dictionary accessors for compatibility (thanks to: Paul Boddie). </li>
     <li> Implemented element-content-whitespace option, added pxdom-assume-element-content to make it more useful. </li>
     <li> Refuse to parse invalid &lt; in attribute values (makes finding well-formedness errors easier). </li>
   </ul>
@@ -481,27 +569,18 @@
   <h3> Future work </h3>
   <ul>
     <li>
-      Clear up any bugs found in this version, which has been changed a lot since
-      the pretty stable 1.0 release;
-    </li>
-    <li>
-      consider supporting DOM Level 3 Events and/or Level 2 Traversal/Range
+      Consider supporting DOM Level 3 Events and/or Level 2 Traversal/Range
       (any interest for these?);
     </li>
     <li>
-      consider adding optional (slow) detection of invalid Unicode characters in
-      names and content, with the different rules for XML 1.0 and 1.1;
-    </li>
-    <li>
-      consider non-monolithic package distribution option: pxdom being a single
-      module is convenient but it is getting <em>big</em>.
+      Consider non-monolithic package distribution option: pxdom being a single
+      module is convenient for distribution but it is getting <em>big</em>.
     </li>
   </ul>
   <p>
-    Thanks are due to all who contributed comments on previous releases, as well
-    as all responsible for the DOM Test Suite (which has caught many gotchas in
-    previous pxdom versions, regardless of the bugs I keep filing against it),
-    particularly Curt Arnold (for fixing many of them).
+    Additional thanks to all responsible for the DOM Test Suite (which has caught
+    many gotchas in previous pxdom versions, regardless of the bugs I keep filing
+    against it), particularly Curt Arnold (for fixing many of them).
   </p>
 
   <h2> Licence (new-BSD-style) </h2>
