@@ -1,30 +1,30 @@
 <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/xhtml1-strict.dtd">
 <html xmlns="http://www.w3.org/1999/xhtml"><head>
-  <title> pxdom 0.9 documentation </title>
+  <title> pxdom 1.0 documentation </title>
   <link rel="stylesheet" href="/style/pxtl.css" />
 </head><body>
   <h1>pxdom</h1>
   <div id="subhead">
-    pxdom 0.9 <br />
+    pxdom 1.0 <br />
     A Python DOM implementation
   </div>
   <p id="nav">
     <a href="http://www.w3.org/DOM/DOMTR#dom3"><span>W3C DOM specs</span></a>
   </p>
   <p>
-    pxdom is a W3C DOM Level 3 Core/XML/Load/Save implementation with
-    Python and OMG (_get/_set) bindings. All features in the November 2003
-    Candidate Recommendations are supported, with the following exceptions:
+    pxdom is a W3C DOM Level 3 Core/XML and Load/Save implementation with
+    Python and OMG-style (_get/_set) bindings. All features in the February 2004
+    Proposed Recommendations are supported, with the following exceptions:
   </p>
   <ul>
-    <li> validation and inclusion of external entities; </li>
-    <li> the LSSerializer &#8216;format-pretty-print&#8217; feature; </li>
-    <li> asynchoronous LSParsers. </li>
+    <li> validation; </li>
+    <li> inclusion of external entities and ResourceResolvers; </li>
+    <li> asynchronous LSParsers. </li>
   </ul>
   <p>
     Additionally, Unicode encodings are only supported on Python 1.6 and later,
-    and Unicode character normalisation features are only available on Python 2.3
-    and later.
+    serialising to an HTTP URI in Python 2.0 and later, and Unicode character
+    normalisation in Python 2.3 onwards.
   </p>
 
   <h2> Installation </h2>
@@ -38,9 +38,8 @@
     having to worry about the version of Python or other XML tools installed.
   </p>
   <p>
-    The only dependencies are the standard library <code class="py">string</code>,
-    <code class="py">StringIO</code>, <code class="py">urllib</code> and
-    <code class="py">urlparse</code> modules.
+    The only dependencies are the standard library string-handling and
+    URL-related modules.
   </p>
 
   <h2> Usage </h2>
@@ -71,7 +70,7 @@
 
   <h3> DOMConfiguration parameters </h3>
   <p>
-    The result of the parse operation depends on the parameters set on the LSParser.config
+    The result of the parse operation depends on the parameters set on the LSParser.domConfig
     mapping. By default, according to the DOM 3 spec, all bound entity references will be
     replaced by the contents of the entity referred to, and all CDATA sections will be replaced
     with plain text nodes.
@@ -88,7 +87,8 @@
   </p>
   <blockquote class="code"><div><code class="py">
     parser= dom.createLSParser(dom.MODE_SYNCHRONOUS, None) <br />
-    parser.config.setParameter('entities', 1) <br />
+    parser.domConfig.setParameter('cdata-sections', 1) <br />
+    parser.domConfig.setParameter('entities', 1) <br />
     doc= parser.parseURI('file:///home/data/doc.xml')
   </code></div></blockquote>
   <p>
@@ -100,6 +100,8 @@
   </code></div></blockquote>
   <p>
     (Of course, this usage would no longer be minidom-compatible.)
+    See the DOM 3 Core and Load/Save specifications for more DOMConfiguration
+    parameters.
   </p>
 
   <h2> Extensions </h2>
@@ -107,11 +109,12 @@
     pxdom supports a few features which aren&#8217;t available in the DOM
     standard. Their names are always prefixed with &#8216;pxdom&#8217;.
   </p>
+
   <h3> Node.pxdomContent </h3>
   <p>
     A convenience property to get the markup for a node, or replace the node
-    with alternative parsed markup, without having to create a separate LSSerializer
-    or LSParser.
+    with alternative parsed markup, without having to create a separate
+    LSSerializer or LSParser.
   </p>
   <p>
     All nodes have a readable pxdomContent, but only those at content level are
@@ -119,21 +122,13 @@
     is used to set parameters for parse and serialise operations invoked by pxdomContent.
   </p>
   <p>
-    pxdomContent is a replacement for the ElementLS.markupContent property that
-    was in earlier Working Drafts of the DOM 3 LS spec.
+    pxdomContent is an extended replacement for the ElementLS.markupContent
+    property that was in earlier Working Drafts of the DOM 3 LS spec.
   </p>
 
-  <h3> pxdom-resolve-resources </h3>
+  <h3> Node.pxdomLocation </h3>
   <p>
-    pxdom is a non-validating, non-external-entity-including DOM implementation.
-    However, it is possible that future versions may support external entities. If this
-    is implemented, it will be turned on by default in new LSParser objects.
-  </p>
-  <p>
-    If you wish to be sure external entities will never be used in future versions of
-    pxdom, set the LSParser.config parameter &#8216;pxdom-resolve-resources&#8217;
-    to a false value. Alternatively, use the <code class="py">parse</code>/<code class="py">parseString</code>
-    functions, which will never resolve external entities (as minidom does not).
+    Read-only property giving a DOMLocator for any Node.
   </p>
 
   <h3> pxdom-assume-element-content </h3>
@@ -158,17 +153,38 @@
   </p>
   <blockquote class="code"><div><code class="py">
     parser= dom.createLSParser(dom.MODE_SYNCHRONOUS, None) <br />
-    parser.config.setParameter('element-content-whitespace', 0) <br />
-    parser.config.setParameter('pxdom-assume-element-content', 1) <br />
+    parser.domConfig.setParameter('element-content-whitespace', 0) <br />
+    parser.domConfig.setParameter('pxdom-assume-element-content', 1) <br />
     doc= parser.parse('file:///data/foo.xml')
   </code></div></blockquote>
+
+  <h3> pxdom-resolve-resources </h3>
+  <p>
+    pxdom is a non-validating, non-external-entity-including DOM implementation.
+    However, it is likely that future versions could support external entities. When this
+    is implemented, it will be turned on by default in new LSParser objects.
+  </p>
+  <p>
+    If you wish to be sure external entities will never be used in future versions of
+    pxdom, set the LSParser.domConfig parameter &#8216;pxdom-resolve-resources&#8217;
+    to a false value. Alternatively, use the <code class="py">parse</code>/<code class="py">parseString</code>
+    functions, which won&#8217;t resolve external entities (because minidom does not).
+  </p>
+
+  <h3> Entity.pxdomAvailable </h3>
+  <p>
+    A boolean flag indicating whether the entity&#8217;s replacement content is
+    available in the <code class="py">childNodes</code> property. This is always
+    true for internal entities, always false for unbound entities and currently
+    false for external entities (though this may change in future versions).
+  </p>
 
   <h3> DocumentType.pxdomElements, pxdomAttlists </h3>
   <p>
     In addition to the DocumentType NamedNodeMaps &#8216;entities&#8217; and
     &#8216;notations&#8217;, pxdom includes maps for the other two
     types of declaration that might occur in the DTD internal subset. They can be
-    read to get more information on the content models than the schemaTypeInfo
+    read to get more information on the content models than the DOM 3 TypeInfo
     interface makes available.
   </p>
   <p>
@@ -196,6 +212,29 @@
   </p>
 
   <h2> Changelog </h2>
+  <h3> Updates from 0.9 to 1.0 </h3>
+  <ul>
+    <li>
+      Tracking changes in the new DOM 3 Proposed Recommendations, renamed LS config properties, added
+      LSException, changed default newLine behaviour, removed prefix from previously-non-standard
+      pxdom-no-input-specified parameter, allow LS namespace parameters to be set False, changed
+      output filter call order
+    </li>
+    <li> Added support for DOMConfiguration parameters &#8216;format-pretty-print&#8217; and &#8216;supported-media-types-only&#8217; </li>
+    <li> Following discussion on www-dom list, changed encoding-to-string to use the string&#8217;s native encoding, unless overridden by output.encoding </li>
+    <li> Added extra error checks for cases in the L3 DOM Test Suite </li>
+    <li> Fixed recursive readonlyness of entities, notations, entity references </li>
+    <li> Fixed setting textContent on non-Text-containing nodes </li>
+    <li> Fixed very silly canSetParameter bug causing occasional erroneous return-false </li>
+    <li> Added compareDocumentPosition to public interface, and fixed fault in comparison of non-child nodes </li>
+    <li> Renamed parameterNameList parameterNames and made it return a proper DOM-style List object instead of a Python one </li>
+    <li> Made namespace/prefix lookup results match the reference algorithm more closely </li>
+    <li> Reorganised parse/serialisation, allowing application-side LSInput and LSOutput objects to be used </li>
+    <li> Made isEntityContentWhitespace cope with nodes inside entity references </li>
+    <li> Fixed possibly-incorrect namespaceURI of unprefixed default attributes </li>
+    <li> Fixed baseURI for entity references and doctype </li>
+  </ul>
+
   <h3> Updates from 0.8 to 0.9 </h3>
   <ul>
     <li> Lots of interface alterations and renamings to track changes in the new DOM 3 Candidate Recommendations. </li>
@@ -203,7 +242,7 @@
     <li> Module code rearranged into separate aspects to cut down on some of the &#8216;monster-class&#8217; readability problems. </li>
     <li> Serialisation mostly rewritten to conform better to specification, particularly the escaping of characters that can't be reproduced in the current encoding. </li>
     <li> Normalisation partially rewritten, support for Unicode character normalisation added. </li>
-    <li> Supports DOMConfiguration parameter &#8216;canonical-form&#8217;. </li>
+    <li> Support for DOMConfiguration parameter &#8216;canonical-form&#8217;. </li>
     <li> Parameter pxdom-resolve-resources added as placeholder for future external entity support .</li>
     <li> Made PIs with no data part parse and serialise correctly. </li>
     <li> Many changes to LSFilters, which were a bit broken. </li>
@@ -212,7 +251,7 @@
     <li> Fixed parsing of &lt;!ATTLIST>s with NMTOKENS, IDREF, IDREFS (whoops!). </li>
     <li> Made attribute value normalization happen in more places it should and fixed entref/charref whitespace-char replacement issues. </li>
     <li> Fixed normalizeDocument namespace-declarations=false option. </li>
-    <li> Supports &#8216;well-formed&#8217; parameter, tightened up invalid character checks at DOM level too. </li>
+    <li> Support for &#8216;well-formed&#8217; parameter, tightened up invalid character checks at DOM level too. </li>
     <li> Made splitTexting a CDATASection correctly create a new CDATASection node, not text. </li>
   </ul>
   <h3> Updates from 0.7 to 0.8 </h3>
@@ -234,28 +273,38 @@
     <li> Made renameNode and writes to Node.prefix update NodeListByTagName objects correctly. </li>
     <li> Made ParseError return non-Unicode string for easier debugging. </li>
   </ul>
+  <h3> Future updates </h3>
+  <ul>
+    <li> Add support for external entities </li>
+    <li>
+      Preserve namespaces when their declarations are on an element which has been rejected by
+      an LSParserFilter or LSSerializerFilter. Spec is unclear on whether this should happen but it seems
+      sensible.
+    </li>
+    <li>
+      Possibly support DOM Level 3 Events and/or Level 2 Traversal/Range.
+    </li>
+  </ul>
 
-  <h2> Licence (new-BSD) </h2>
+  <h2> Licence (new-BSD-style) </h2>
   <p>
-    Copyright &#169; 2003, Andrew Clover. All rights reserved.
+    Copyright &#169; 2004, Andrew Clover. All rights reserved.
   </p>
   <p>
     Redistribution and use in source and binary forms, with or without modification,
     are permitted provided that the following conditions are met:
   </p>
-  <p>
-    Redistributions of source code must retain the above copyright notice, this list
-    of conditions and the following disclaimer.
-  </p>
-  <p>
-    Redistributions in binary form must reproduce the above copyright notice, this
-    list of conditions and the following disclaimer in the documentation and/or
-    other materials provided with the distribution.
-  </p>
-  <p>
-    The name of Andrew Clover may not be used to endorse or promote products derived
-    from this software without specific prior written permission.
-  </p>
+  <ul>
+    <li>
+      Redistributions must reproduce the above copyright notice, this
+      list of conditions and the following disclaimer in the documentation and/or
+      other materials provided with the distribution.
+    </li>
+    <li>
+      The name of the copyright holder may not be used to endorse or promote products derived
+      from this software without specific prior written permission.
+    </li>
+  </ul>
   <p><strong>
     This software is provided by the copyright holder and contributors &#8220;as is&#8221;
     and any express or implied warranties, including, but not limited to, the implied
