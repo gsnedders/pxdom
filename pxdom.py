@@ -2,9 +2,9 @@
     non-validating parser conforming to DOM Level 3 Core/XML and Load/Save Rec
 """
 
-__version__= 1,2
+__version__= 1,3
 __author__ = 'Andrew Clover <and@doxdesk.com>'
-__date__   = '23 October 2004'
+__date__   = '30 December 2005'
 __all__    = [
   'getDOMImplementation', 'getDOMImplementations', 'parse', 'parseString'
 ]
@@ -36,47 +36,53 @@ try:
 except NameError:
   globals()['True'], globals()['False']= None is None, None is not None
 
-
-# Check unicode is supported (Python 1.6+) and find width of character string.
-# In Python 2.2+ it can be 16 or 32 bits depending on compile option. Guess
-# UTF-8 as a completely arbitrary default for non-Unicode Pythons
+# Use sets where available for low-level character matching
 #
 try:
-  Unicode= type(unicode(''))
-except NameError:
+  from sets import ImmutableSet
+except ImportError:
+  ImmutableSet= lambda x: x
+
+# Check unicode is supported (Python 1.6+), provide dummy class to use with
+# isinstance
+#
+try:
+  import unicodedata
+except ImportError:
   globals()['unicode']= None
   class Unicode: pass
-  NATIVECHARSET= 'utf-8'
 else:
-  import unicodedata
-  if getattr(sys, 'maxunicode', 0)>0xFFFF:
-    NATIVECHARSET= 'utf-32'
-  else:
-    NATIVECHARSET= 'utf-16'
-  import codecs
+  Unicode= type(unicode(''))
+  import unicodedata, codecs
 
-# XML character classes. Always use 1.1 character model as 1.0 is too complex
+# XML character classes. Provide only an XML 1.1 character model for NAMEs, as
+# 1.0's rules are insanely complex.
 #
-DEC= '0123456789'
-HEX= '0123456789abcdefABDCDEF'
+DEC= ImmutableSet('0123456789')
+HEX= ImmutableSet('0123456789abcdefABDCDEF')
 LS= ('\r\n', '\r')
 WHITE= ' \t\n\r'
 
-NOTCHAR= (
+NOTCHAR= ImmutableSet(
   '\x00\x01\x02\x03\x04\x05\x06\x07\x08\x0B\x0C\x0E\x0F'
   '\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x7F'
 )
-NOTFIRST= '.-0123456789'
-NOTNAME= ' \t\n\r!"#$%&\'()*+,/;<=>?@[\\]^`{|}~'
-NOTURI= string.join(map(chr, range(0, 33)+range(127,256)), '')+'<>"{}\^`'
+NOTFIRST= ImmutableSet('.-0123456789')
+NOTNAME= ImmutableSet(' \t\n\r!"#$%&\'()*+,/;<=>?@[\\]^`{|}~')
+NOTURI= ImmutableSet(
+  string.join(map(chr, range(0, 33)+range(127,256)), '')+'<>"{}\^`'
+)
 
 if unicode is not None:
   LSU= unichr(0x85), unichr(0x2028)
   WHITEU= unichr(0x85)+unichr(0x2028)
-  NOTCHARU= unicode(
-    '\x80\x81\x82\x83\x84\x86\x87\x88\x89\x8A\x8B\x8C\x8D\x8E\x8F'
-    '\x90\x91\x92\x93\x94\x95\x96\x97\x98\x99\x9A\x9B\x9C\x9D\x9E\x9F',
-  'iso-8859-1')+unichr(0xFFFE)+unichr(0xFFFF)
+  NOTCHARU= ImmutableSet(
+    unicode(
+      '\x80\x81\x82\x83\x84\x86\x87\x88\x89\x8A\x8B\x8C\x8D\x8E\x8F'
+      '\x90\x91\x92\x93\x94\x95\x96\x97\x98\x99\x9A\x9B\x9C\x9D\x9E\x9F',
+      'iso-8859-1'
+    )+unichr(0xFFFE)+unichr(0xFFFF)
+  )
   NOTFIRSTU= (0xB7,0xB8), (0x300,0x370), (0x203F,0x2041)
   NOTNAMEU= (
     (0x80,0xB7), (0xB8,0xC0), (0xD7,0xD8), (0xF7,0xF8), (0x037E,0x037F),
@@ -109,6 +115,7 @@ REPR_MAX_LIST=3
 #
 XMNS= 'http://www.w3.org/XML/1998/namespace'
 NSNS= 'http://www.w3.org/2000/xmlns/'
+HTNS= 'http://www.w3.org/1999/xhtml'
 DTNS= 'http://www.w3.org/TR/REC-xml'
 FIXEDNS= {'xmlns': NSNS, 'xml': XMNS}
 
@@ -122,11 +129,20 @@ class _NONS:
     return '(non-namespace)'
 NONS= _NONS()
 
+# Media types to allow in addition to anything labelled '...+xml' when using
+# parameter supported-media-types-only
+#
 XMLTYPES= [
   'text/xml', 'application/xml', 'application/xml-dtd', 'text/xsl'
   'text/xml-external-parsed-entity','application/xml-external-parsed-entity'
 ]
 
+# Elements defined as EMPTY in XHTML for parameter pxdom-html-compatible
+#
+HTMLEMPTY= [
+  'area', 'base', 'basefont', 'br', 'col', 'frame', 'hr', 'img',
+  'input', 'isindex', 'link', 'meta', 'param'
+]
 
 def _checkName(name, nc= False):
   """ Check name string, raise exception if not well-formed. Optionally check
@@ -565,6 +581,7 @@ class DOMImplementation(DOMObject):
     return document
 
   def createDocumentType(self, qualifiedName, publicId, systemId):
+    _checkName(qualifiedName)
     if _splitName(qualifiedName)[1] is None:
       raise NamespaceErr(qualifiedName, None)
     doctype= DocumentType(None, qualifiedName, publicId, systemId)
@@ -642,6 +659,7 @@ class DOMConfiguration(DOMObject):
     # Non-standard extensions
     'pxdom-assume-element-content':              (False, True ),
     'pxdom-resolve-resources':                   (True,  True ),
+    'pxdom-html-compatible':                     (False, True ),
     # Switches to make required normalizeDocument operations optional
     'pxdom-normalize-text':                      (True,  True ),
     'pxdom-reset-identity':                      (True,  True ),
@@ -661,8 +679,9 @@ class DOMConfiguration(DOMObject):
         'namespaces', 'well-formed'
     )),
     'canonical-form': ((
-        'cdata-sections', 'entities', 'normalize-characters',
-        'discard-default-content', 'xml-declaration'
+        'cdata-sections', 'entities', 'format-pretty-print',
+        'normalize-characters', 'discard-default-content', 'xml-declaration',
+        'pxdom-html-compatible'
       ), (
         'element-content-whitespace', 'namespace-declarations', 'namespaces',
         'well-formed'
@@ -986,15 +1005,23 @@ class Node(DOMObject):
   )
 
   def appendChild(self, newChild):
+    if newChild is None:
+      raise NotFoundErr(self, None, None)
     self._writeChild(newChild, None, False)
     return newChild
   def insertBefore(self, newChild, oldChild):
+    if newChild is None:
+      raise NotFoundErr(self, None, None)
     self._writeChild(newChild, oldChild, False)
     return newChild
-  def replaceChild(self, newChild, oldChild):
-    self._writeChild(newChild, oldChild, True)
-    return oldChild
+  def replaceChild(self, newChild, refChild):
+    if newChild is None or refChild is None:
+      raise NotFoundErr(self, None, None)
+    self._writeChild(newChild, refChild, True)
+    return refChild
   def removeChild(self, oldChild):
+    if oldChild is None:
+      raise NotFoundErr(self, None, None)
     self._writeChild(None, oldChild, True)
     return oldChild
 
@@ -1002,9 +1029,7 @@ class Node(DOMObject):
     if self._readonly:
       raise NoModificationAllowedErr(self, 'Child')
     if oldChild is not None and oldChild not in self._childNodes:
-      raise NotFoundErr(
-        self._childNodes, oldChild.namespaceURI, oldChild.localName
-      )
+      raise NotFoundErr(self, oldChild.namespaceURI, oldChild.localName)
     if oldChild is newChild:
       return
 
@@ -1150,9 +1175,9 @@ class NamedNodeNS(Node):
   def _set_prefix(self, value):
     if value=='':
       value= None
-    else:
-      _checkName(value)
-    if (':' in value or
+    if value is not None:
+      _checkName(value, True)
+    if (value is not None and ':' in value or
       (self._namespaceURI in (None, NONS) and value is not None) or
       value=='xml' and self._namespaceURI!=XMNS or
       (value=='xmlns') != (self._namespaceURI==NSNS)
@@ -1263,6 +1288,7 @@ class Document(Node):
   def createElementNS(self, namespaceURI, qualifiedName):
     if namespaceURI=='':
       namespaceURI= None
+    _checkName(qualifiedName)
     prefix, localName= _splitName(qualifiedName)
     if (
       localName is None or
@@ -1279,6 +1305,7 @@ class Document(Node):
   def createAttributeNS(self, namespaceURI, qualifiedName):
     if namespaceURI=='':
       namespaceURI= None
+    _checkName(qualifiedName)
     prefix, localName= _splitName(qualifiedName)
     if (
       localName is None or
@@ -2014,6 +2041,27 @@ def _Attr__cloneNode(self, deep):
   r._specified= True
   return r
 
+def _Document__cloneNode(self, deep):
+  """ Make a copy of a document. This is 'implementation dependent' in the
+      spec; we allow it and make a new document in response, copying any child
+      nodes in importNode-style if deep is True, otherwise just making an
+      empty documentElement.
+  """
+  doc= Document()
+  self._cloneTo(doc)
+  doc._ownerDocument= doc
+  if deep:
+    doc._childNodes.readonly= False
+    for child in self._childNodes:
+      r= child._recurse(True, clone= True, ownerDocument=doc)
+      doc._childNodes._append(r)
+      r._containerNode= doc
+    doc._childNodes.readonly= True
+  else:
+    ns, name= self.documentElement.namespaceURI, self.documentElement.nodeName
+    doc.appendChild(doc.createElementNS(ns, name))
+  return doc
+
 def _Document__adoptNode(self, source):
   """ Take over a node and its descendants from a potentially different
       document.
@@ -2052,7 +2100,7 @@ def _Document__importNode(self, importedNode, deep):
       including all descendants.
   """
   if importedNode.nodeType in (Node.DOCUMENT_NODE, Node.DOCUMENT_TYPE_NODE):
-    raise NotSupportedErr(importedNode, 'importNode')
+    raise NotSupportedErr(importedNode, 'beImported')
   return importedNode._recurse(deep, clone= True, ownerDocument= self)
 
 
@@ -2062,11 +2110,11 @@ def _Node___recurse(self,
   """ Perform operations on a node and, if 'deep', all its descendants
       recursively.
   """
-  if clone:
+  if not clone:
+    node= self
+  else:
     node= self.__class__()
     self._cloneTo(node)
-  else:
-    node= self
 
   if ownerDocument is not None:
     node._ownerDocument= ownerDocument
@@ -3051,7 +3099,10 @@ class InputBuffer:
     #
     if input.characterStream is not None:
       self.chars= input.characterStream.read()
-      self.encoding= NATIVECHARSET
+      if unicode is not None:
+        self.encoding= 'utf-16'
+      else:
+        self.encoding= 'utf-8'
     elif input.byteStream is not None:
       self.bytes= input.byteStream.read()
     elif input.stringData not in (None, ''):
@@ -3059,10 +3110,19 @@ class InputBuffer:
       # Hack. Allow string data to be a blank string by hiding it in a tuple.
       #
       if isinstance(input.stringData, type(())):
-        self.chars= input.stringData[0]
+        data= input.stringData[0]
       else:
-        self.chars= input.stringData
-      self.encoding= NATIVECHARSET
+        data= input.stringData
+
+      # Treat stringData as bytes if it's a narrow string, or chars in Unicode
+      #
+      if isinstance(data, Unicode):
+        self.chars= data
+        self.encoding= 'utf-16'
+      else:
+        self.bytes= data
+        self.encoding= 'utf-8'
+
     elif self.uri is not None:
       try:
         stream= urllib.urlopen(self.uri)
@@ -3641,7 +3701,9 @@ class LSParser(DOMObject):
         parentNode._xmlStandalone= xmlStandalone
 
 
-  def _Content(self, parentNode, refChild, namespaces, inheritURI= None):
+  def _Content(self, parentNode, refChild, namespaces,
+    inheritURI= None, flush= True
+  ):
     """ Parse general content. Optionally, fix up base URI (for when entity
         references are off)
     """
@@ -3655,7 +3717,7 @@ class LSParser(DOMObject):
       if text!='':
         if isDoc:
           for c in text:
-            if not (c in WHITE or isinstance(char, Unicode) and c in WHITEU):
+            if not (c in WHITE or isinstance(c, Unicode) and c in WHITEU):
               self._error('Text not allowed at document level')
         else:
           self._push(text)
@@ -3703,7 +3765,8 @@ class LSParser(DOMObject):
 
       else:
         break
-    self._flush(parentNode, refChild)
+    if flush:
+      self._flush(parentNode, refChild)
 
 
   def _Element(self, parentNode, refChild, namespaces, baseURI= None):
@@ -3824,7 +3887,12 @@ class LSParser(DOMObject):
 
       # If the filter doesn't want it at all, must parse the contents without
       # informing the filter and throw the lot away. Otherwise parse content
-      # as either child or replacement.
+      # as either child or replacement. Note! If a NodeFilter rejects or skips
+      # an element node, it is possible that the DOM tree could become
+      # un-normalised - that is, there may be two text nodes next to each
+      # other. Unfortunately there is no logical way to avoid this without
+      # altering previous text nodes that have already been sent to the
+      # NodeFilter, which is probably a worse thing.
       #
       if accepted==NodeFilter.FILTER_REJECT:
         filter= self._filter
@@ -3834,7 +3902,7 @@ class LSParser(DOMObject):
         finally:
           self._filter= filter
       elif accepted==NodeFilter.FILTER_SKIP:
-        self._Content(parentNode, refChild, newspaces, baseURI)
+        self._Content(parentNode, refChild, newspaces, baseURI, flush= False)
       elif accepted==NodeFilter.FILTER_ACCEPT:
         self._Content(element, None, newspaces)
 
@@ -3894,7 +3962,7 @@ class LSParser(DOMObject):
     self._filter= filter
 
 
-  def _Charref(self, parentNode, refChild, namespaces):
+  def _Charref(self, parentNode, refChild, namespaces, textonly= False):
     """ Parse character references.
     """
     # Read character number from hex or decimal.
@@ -3907,18 +3975,27 @@ class LSParser(DOMObject):
       self._error('Expected semicolon after character reference')
     if value in (0, 0xFFFE, 0xFFFF) or 0xD800<=value<0xE000:
       self._error('Invalid character referenced')
+    elif parentNode.ownerDocument.xmlVersion=='1.0':
+      if (value<256 and chr(value) in NOTCHAR) or (
+        unicode is not None and unichr(value) in NOTCHARU
+      ):
+        self._error('Invalid character reference for XML 1.0 character model')
 
     # On pre-Unicode Pythons, store non-ASCII character references as fake
-    # unbound entity references.
+    # unbound entity references, unless we're parsing an EntityValue, in which
+    # case we can only pass through an escaped &#...; as a last attempt
     #
     if unicode is None:
       if value>=128:
-        self._flush(parentNode, refChild)
-        ent= EntityReference(parentNode._ownerDocument, 'x')
-        ent._nodeName= '#x%x' % value
-        ent._setLocation(self._buffer.getLocation())
-        ent._recurse(True, readonly= True)
-        self._insert(ent, parentNode, refChild)
+        if textonly:
+          self._push('&#%d;' % value)
+        else:
+          self._flush(parentNode, refChild)
+          ent= EntityReference(parentNode._ownerDocument, 'x')
+          ent._nodeName= '#x%x' % value
+          ent._setLocation(self._buffer.getLocation())
+          ent._recurse(True, readonly= True)
+          self._insert(ent, parentNode, refChild)
 
       # Otherwise add as text to the queue. On 'narrow' Python builds
       # character references outside the BMP will cause unichr to not work,
@@ -3966,11 +4043,11 @@ class LSParser(DOMObject):
 
     # Look for the InputBuffer for this general entity
     #
+    buffer= None
     if not self._generalEntities.has_key(name):
       self._domConfig._handleError(UnboundEntityErr())
-    buffer= self._generalEntities.get(name, None)
-    ent= None
-    inheritURI= None
+    else:
+      buffer= self._generalEntities[name]
 
     # If entities is on, create an EntityReference node and parse the
     # replacement text into it. If there is no replacement text available
@@ -3981,28 +4058,30 @@ class LSParser(DOMObject):
       ent= EntityReference(parentNode.ownerDocument, name)
       if buffer is not None:
         parentNode.insertBefore(ent, refChild)
-        passParent, passRef= ent, None
+        oldbuffer= self._buffer
+        self._buffer= buffer
+        self._Content(ent, None, namespaces)
+        self._buffer= oldbuffer
+        buffer.reset()
+      ent._recurse(True, readonly= True)
+      self._insert(ent, parentNode, refChild,
+        self._domConfig.getParameter('pxdom-preserve-base-uri')
+      )
 
     # If entities is off, parse the replacement text from the InputBuffer
     # directly into the current node
     #
     else:
-      passParent, passRef= parentNode, refChild
       if self._domConfig.getParameter('pxdom-preserve-base-uri'):
+        inheritURI= None
         if buffer.uri!=parentNode.baseURI:
           inheritURI= buffer.uri
+        oldbuffer= self._buffer
+        self._buffer= buffer
+        self._Content(parentNode, refChild, namespaces, inheritURI, flush= False)
+        self._buffer= oldbuffer
+        buffer.reset()
 
-    if buffer is not None:
-      oldbuffer= self._buffer
-      self._buffer= buffer
-      self._Content(passParent, passRef, namespaces, inheritURI)
-      self._buffer= oldbuffer
-      buffer.reset()
-    if ent is not None:
-      ent._recurse(True, readonly= True)
-      self._insert(ent, parentNode, refChild,
-        self._domConfig.getParameter('pxdom-preserve-base-uri')
-      )
     del self._entityNest[-1]
 
 
@@ -4062,7 +4141,7 @@ class LSParser(DOMObject):
   def _Doctype(self, parentNode, refChild, namespaces):
     self._white()
     name= self._name()
-    if not self._match('>'):
+    if not self._match('>', False):
       self._white()
     publicId, systemId= self._externalId(None)
 
@@ -4127,12 +4206,14 @@ class LSParser(DOMObject):
 
   # Parameter entity handling for DTD parsing.
   #
-  def _checkPE(self, doctype, white= True):
+  def _checkPE(self, doctype, white= True, ignorePercent= False):
     """ Check whether the buffer contains a parameter entity reference, or
         whether the buffer is coming to an end inside a parameter entity. In
         either case return a different buffer object to the caller to carry on
         parsing. Optionally skip white spaces at the edges of references and
-        replacements.
+        replacements. Optionally allow and ignore a % followed by whitespace,
+        for the construct <!ENTITY % ...> which is the only place this can
+        occur.
     """
     while True:
       if white:
@@ -4141,6 +4222,12 @@ class LSParser(DOMObject):
       # Step into PE
       #
       if self._match('%'):
+        if ignorePercent:
+          index= self._buffer.index
+          if self._buffer.chars[index:index+1] in WHITE+'%':
+            self._buffer.index= index-1
+            return
+
         name= self._name()
         if not self._match(';'):
           self._error('Expected ; to end parameter reference')
@@ -4280,9 +4367,7 @@ class LSParser(DOMObject):
   def _EntityD(self, doctype):
     """ Parse entity declaration.
     """
-    # Read parameter or general entity
-    #
-    self._white()
+    self._checkPE(doctype, ignorePercent= True)
     isParameter= self._match('%')
     self._checkPE(doctype)
     name= self._name()
@@ -4290,44 +4375,40 @@ class LSParser(DOMObject):
     publicId, systemId= self._externalId(doctype)
     self._checkPE(doctype)
 
-    # Internal entities: read the replacement text from a literal, replacing
-    # character references and parameter entity references, but *not* any
-    # other type of entity reference, even the built-ins.
+    # Internal entities: read the literal entity value into a temporary input
+    # buffer and parse only character references and parameter entity
+    # references from it - *not* any other type of entity reference, even the
+    # built-ins. The queued text from this parse will be the replacement text
+    # to be stored in another InputBuffer for later use.
     #
     if systemId is None:
-      value= ''
       quote= self._quote()
       location= self._buffer.getLocation()
+      literal= self._upto(quote)
+      if not self._match(quote):
+        self._error('EntityValue left open')
+      realbuf= self._buffer
+
+      input= LSInput()
+      input.stringData= (literal,) # hack to allow empty string
+      input.systemId= self._buffer.uri
+      self._buffer= InputBuffer(input, location, self._domConfig, False)
+
       while True:
-        value= value+self._upto(quote+'&%')
-
-        if self._match('&'):
-          if not self._match('#'):
-            value= value+'&'
-            continue
-          if self._match('x'):
-            char= self._hex()
-          else:
-            char= self._dec()
-          if not self._match(';'):
-            self._error('Expected semicolon after char reference')
-          if unicode is not None:
-            value= value+unichr(char)
-          elif char<128:
-            value= value+chr(char)
-          else:
-            value= value+'&#'+str(char)+';'
-  
-        elif self._match(quote):
-          break
-
+        self._push(self._upto(('&#', '%')))
+        if self._match('&#'):
+          self._Charref(doctype, None, None, textonly= True)
         else:
           self._checkPE(doctype, white= False)
-          if self._buffer.index>=len(self._buffer.chars):
-            self._error('Entity internal value left open')
-        
+          if self._buffer.index==len(self._buffer.chars):
+            break
+
+      replacement= self._queue
+      self._queue= ''
+      self._buffer=realbuf
+
       input= LSInput()
-      input.stringData= (value,) # hack to allow empty string
+      input.stringData= (replacement,)
       input.systemId= self._buffer.uri
       extbuf= InputBuffer(input, location, self._domConfig, False)
       entity= Entity(
@@ -4622,7 +4703,9 @@ def _DOMImplementation__createLSSerializer(self):
 #
 def _Node___get_pxdomContent(self):
   config= DOMConfiguration(self._ownerDocument.domConfig)
-  return LSSerializer(config).writeToString(self)
+  s= LSSerializer(config)
+  s.newLine= '\n'
+  return s.writeToString(self)
 
 def _Node___set_pxdomContent(self, value):
   input= LSInput()
@@ -4663,35 +4746,42 @@ class OutputBuffer:
       output.characterStream is None and output.byteStream is None
       and output.systemId is None
     ):
-        raise NoOutputErr()
+      raise NoOutputErr()
 
     # Work out which charsets to use (a) for detecting unencodable characters
     # and escaping them (and also putting in the XML declaration if there is
     # one) and (b) encoding the final output.
     #
-    self.encoding= output.encoding
-    self.outputEncoding= None
-    if self.encoding is None and output.characterStream is None:
-      self.encoding= document.inputEncoding or document.xmlEncoding
-    if self.encoding is None:
-      self.encoding= NATIVECHARSET
-    elif output.characterStream is None:
-      self.outputEncoding= self.encoding
+    if output.characterStream is None:
+      self.encoding=self.outputEncoding= (
+        output.encoding or document.inputEncoding or document.xmlEncoding
+        or 'utf-8'
+      )
+    else:
+      if output.encoding is not None:
+        self.encoding= output.encoding
+      elif unicode is not None:
+        self.encoding= 'utf-16'
+      else:
+        self.encoding= 'utf-8'
+      self.outputEncoding= None
 
     # Ignore endianness in the declared version of the encoding, and check it
     # actually exists.
     #
-    if (
-      string.lower(self.encoding)[:6] in ('utf-16', 'utf-32') and
-      self.encoding[6:-2] in ('', '-', '_') and
-      string.lower(self.encoding)[-2:] in ('le', 'be')
-    ):
-      self.encoding= self.encoding[:6]
-    if unicode is not None:
-      try:
-        unicode('').encode(self.encoding)
-      except LookupError:
-        document.domConfig._handleError(UnsupportedEncodingErr())
+    if self.encoding is not None:
+      if (
+        string.lower(self.encoding)[:6] in ('utf-16', 'utf-32') and
+        self.encoding[6:-2] in ('', '-', '_') and
+        string.lower(self.encoding)[-2:] in ('le', 'be')
+      ):
+        self.encoding= self.encoding[:6]
+      if unicode is not None:
+        try:
+          unicode('').encode(self.encoding)
+        except LookupError:
+          document.domConfig._handleError(UnsupportedEncodingErr())
+
 
   def flush(self):
     """ Finish output, sending buffer contents to the nominated destination
@@ -4702,18 +4792,40 @@ class OutputBuffer:
     """
     data= self._buffer.getvalue()
     self._buffer= None
+    bs, cs= self._output.byteStream, self._output.characterStream
     try:
 
-      if self._output.characterStream is True:
+      # Unless outputting to byte-based destination with no outputEncoding,
+      # try to coerce collected string to unicode. Leave the string narrow if
+      # it contains characters than cannot be coerced into unicode.
+      #
+      if unicode is not None and not isinstance(data, Unicode) and not (
+        cs is None and self.outputEncoding is None
+      ):
+        try:
+          data= unicode(data, self.outputEncoding or 'us-ascii')
+        except UnicodeError:
+          pass
+
+      # If outputting character string or stream, return the probably-unicode
+      # data
+      #
+      if cs is True:
         return data
-      elif self._output.characterStream is not None:
-        self._output.characterStream.write(data)
+      elif cs is not None:
+        cs.write(data)
         return True
 
-      if self.outputEncoding is not None and unicode is not None:
-        data= unicode(data).encode(self.outputEncoding)
+      # If outputting to byte stream/URI, encode if necessary. May fail if
+      # data still contains non-ascii byte character.
+      #
+      if unicode is not None and self.outputEncoding is not None:
+        try:
+          data= data.encode(self.outputEncoding)
+        except UnicodeError:
+          pass
 
-      if self._output.byteStream is True:
+      if bs is True:
         return data
       if self._output.byteStream is not None:
         self._output.byteStream.write(data)
@@ -4775,13 +4887,11 @@ class OutputBuffer:
     if escaper is not None:
       for ch in NOTCHAR:
         if ch in data:
-          print 'replace ', ord(ch)
-          data= string.replace(data, ch, escaper.escape(ord(ch)))
+          data= r(data, ch, escaper.escape(ord(ch)))
       if isinstance(data, Unicode):
         for ch in NOTCHARU:
           if ch in data:
-            print 'replace ', ord(ch)
-            data= string.replace(data, ch, escaper.escape(ord(ch)))
+            data= r(data, ch, escaper.escape(ord(ch)))
 
     # Try to unicode-encode if we will need to and the result isn't going to
     # be a UTF encoding - by definition, all possible characters are encodable
@@ -4945,7 +5055,7 @@ def _Document___writeTo(self,dest,config,filter,newLine,namespaces):
       dest.write(dest.encoding)
     if self._xmlStandalone:
       dest.write('" standalone="yes')
-    dest.write('"?>\n')
+    dest.write('"?>'+newLine)
   elif (self._xmlVersion not in ('1.0', None, '') or self._xmlStandalone):
     config._handleError(XmlDeclarationNeededErr(self))
 
@@ -5017,15 +5127,25 @@ def _Element___writeTo(self, dest, config, filter, newLine, namespaces):
     dest.setSeparator(' ')
   dest.setSeparator(None)
 
-  empty= self._childNodes.length==0
-  if empty and not config.getParameter('canonical-form'):
+  if config.getParameter('canonical-form'):
+    empty= False
+  else:
+    empty= self._childNodes.length==0
+    if config.getParameter('pxdom-html-compatible'):
+      empty= empty and (
+        self.namespaceURI in (HTNS, None) and self.localName in HTMLEMPTY
+      )
+
+  if empty:
+    if config.getParameter('pxdom-html-compatible'):
+      dest.write(' ')
     dest.write('/>')
   else:
     dest.write('>')
+    if self._childNodes.length!=0:
 
-    # Write child content
-    #
-    if not empty:
+      # Write children, reformatting them in pretty-print mode
+      #
       if not config.getParameter('format-pretty-print') or (
         self._childNodes.length==1 and
         self._childNodes[0].nodeType==Node.TEXT_NODE and
@@ -5080,13 +5200,15 @@ def _Attr___writeTo(
   dest.write(config._cnorm(name, self),_Complainer(config, self, True))
 
   # In canonical form mode, output actual attribute value (suitably encoded)
+  # no entrefs
   #
   dest.write('="')
   if config.getParameter('canonical-form'):
-    dest.write( r(r(r(r(r(r(self.value, '&', '&amp;'),
-      '<','&lt;'),'"','&quot;'),'\x0D','&#xD;'),'\n','&#xA'),'\t','&#x9;'),
-      _Charreffer(True)
-    )
+    s= r(r(r(r(r(r(self.value, '&', '&amp;'), '<','&lt;'),'"','&quot;'),
+      '\x0D','&#xD;'),'\n','&#xA'),'\t','&#x9;')
+    if isinstance(m, Unicode):
+      m= r(r(m, u'\x85', u'&#x85;'), u'\u2028', u'&#x2028')
+    dest.write(s, _Charreffer(True))
 
   # Otherwise, iterate into children, but replacing " marks. Don't filter
   # children.
@@ -5135,8 +5257,12 @@ def _Text___writeTo(
     if attr:
       m= r(r(m, '"', '&quot;'), '\t', '&#9;')
     m= r(r(m, ']]>', ']]&gt;'), '\r', '&#13;')
+    if isinstance(m, Unicode):
+      m= r(r(m, u'\x85', u'&#133;'), u'\u2028', u'&#8232;')
     if config.getParameter('format-pretty-print'):
       m= string.join(map(string.strip, string.split(m, '\n')), newLine)
+    else:
+      m= r(m, '\n', newLine)
     dest.write(m, _Charreffer())
 
 def _CDATASection___writeTo(
