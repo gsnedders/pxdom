@@ -1,10 +1,12 @@
-""" pxdom - stand-alone embeddable pure-Python DOM implementation and
-    non-validating parser conforming to DOM Level 3 Core/XML and Load/Save Rec
+""" pxdom - stand-alone embeddable pure-Python DOM implementation
+
+Fully-compliant with DOM Level 3 Core/XML and Load/Save Recommendations.
+Includes pure-Python non-validating parser .
 """
 
-__version__= 1,3
+__version__= 1,4
 __author__ = 'Andrew Clover <and@doxdesk.com>'
-__date__   = '30 December 2005'
+__date__   = '19 July 2006'
 __all__    = [
   'getDOMImplementation', 'getDOMImplementations', 'parse', 'parseString'
 ]
@@ -29,7 +31,7 @@ def _insertMethods():
       setattr(globals()[class_], method, value)
 
 
-# Backwards-compatibility boolean type (<2.2.3)
+# Backwards-compatibility boolean type (<2.2.1)
 #
 try:
   True
@@ -4682,12 +4684,6 @@ def parseString(content, parameters= {}):
   return parser.parse(src)
 
 
-class LSResourceResolver:
-  """ Resource resolvers are not currently used by pxdom.
-  """
-  pass
-
-
 # DOM 3 LS Save features
 # ============================================================================
 
@@ -5207,7 +5203,7 @@ def _Attr___writeTo(
     s= r(r(r(r(r(r(self.value, '&', '&amp;'), '<','&lt;'),'"','&quot;'),
       '\x0D','&#xD;'),'\n','&#xA'),'\t','&#x9;')
     if isinstance(m, Unicode):
-      m= r(r(m, u'\x85', u'&#x85;'), u'\u2028', u'&#x2028')
+      m= r(r(m, unichr(0x85), '&#x85;'), unichr(0x2028), unichr(0x2028))
     dest.write(s, _Charreffer(True))
 
   # Otherwise, iterate into children, but replacing " marks. Don't filter
@@ -5258,7 +5254,7 @@ def _Text___writeTo(
       m= r(r(m, '"', '&quot;'), '\t', '&#9;')
     m= r(r(m, ']]>', ']]&gt;'), '\r', '&#13;')
     if isinstance(m, Unicode):
-      m= r(r(m, u'\x85', u'&#133;'), u'\u2028', u'&#8232;')
+      m= r(r(m, unichr(0x85), '&#133;'), unichr(0x2028), '&#8232;')
     if config.getParameter('format-pretty-print'):
       m= string.join(map(string.strip, string.split(m, '\n')), newLine)
     else:
