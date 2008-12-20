@@ -1,11 +1,11 @@
 <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/xhtml1-strict.dtd">
 <html xmlns="http://www.w3.org/1999/xhtml"><head>
-  <title> pxdom 1.4 documentation </title>
+  <title> pxdom 1.5 documentation </title>
   <link rel="stylesheet" href="/style/pxtl.css" />
 </head><body>
   <h1>pxdom</h1>
   <div id="subhead">
-    pxdom 1.4 <br />
+    pxdom 1.5 <br />
     A Python DOM implementation
   </div>
   <p id="nav">
@@ -23,12 +23,12 @@
     <li> name character checking is only completely rigorous for XML 1.1. </li>
   </ul>
   <p>
-    pxdom runs on Python 1.5.2 or later, and has been tested up to 2.5b1.
+    pxdom runs on Python 1.5.2 or later, and has been tested up to 2.5.2.
     Certain features are dependent on Python version:
   </p>
   <ul>
     <li> for Unicode, Python 1.6 or later is required; </li>
-    <li> using a LSSerializer to write to an HTTP URI requires Python 2.0 or later; </li>
+    <li> using an LSSerializer to write to an HTTP URI requires Python 2.0 or later; </li>
     <li> Unicode character normalisation options require Python 2.3 or later. </li>
   </ul>
 
@@ -53,25 +53,58 @@
     from DOM Level 3 Core. So to parse a document from a file, use eg.:
   </p>
   <blockquote class="code"><div><code class="py">
-    import pxdom <br />
     dom= pxdom.getDOMImplementation('') <br />
     parser= dom.createLSParser(dom.MODE_SYNCHRONOUS, None) <br />
-    doc= parser.parseURI('file:///f|/data/doc.xml')
+    document= parser.parseURI('file:///f|/data/doc.xml')
   </code></div></blockquote>
   <p>
-    For more on using DOM Level 3 Load features to create documents from various
-    sources, see the <a href="http://www.w3.org/TR/DOM-Level-3-LS"><span>DOM Level
-    3 LS</span></a> specification.
+    And to serialise and save a document to a file, try:
   </p>
+  <blockquote class="code"><div><code class="py">
+    serialiser= document.implementation.createLSSerializer() <br />
+    serialiser.writeToURI(document, 'file:///f|/data/doc.xml') 
+  </code></div></blockquote>
   <p>
-    Alternatively, the pxdom module offers the convenience functions
+    These interfaces take URIs; you can convert a local filepath to a URI using the
+    standard library urllib module:
+  </p>
+  <blockquote class="code"><div><code class="py">
+    uri= 'file:'+urllib.pathname2url(path)
+  </code></div></blockquote>
+  <p>
+    Many features of parsing and serialisation can be set using the <code class="py">domConfig</code>
+    objects in <code class="py">LSParser</code> and <code class="py">LSSerializer</code>,
+    as well as creating <code class="py">LSInput</code> and <code class="py">LSOutput</code>
+    objects for more control over the source and destination of these operations.
+    For example to serialise a document explicitly to the Latin-1 encoding:
+  </p>
+  <blockquote class="code"><div><code class="py">
+    output= document.implementation.createLSOutput() <br />
+    output.systemId= 'file:///f|/data/doc.xml' <br />
+    output.encoding= 'utf-8' <br />
+    serialiser= document.implementation.createLSSerializer() <br />
+    serialiser.write(document, output)
+  </code></div></blockquote>
+  <p>
+    For full details on using these standard features, see the
+    <a href="http://www.w3.org/TR/DOM-Level-3-LS"><span>DOM Level3 LS</span></a> specification.
+  </p>
+
+  <h3> Shortcuts </h3>
+  <p>
+    As a slightly less verbose alternative to the W3C standard parser interface,
+    the pxdom module offers the convenience functions
     <code class="py">parse</code> and <code class="py">parseString</code>,
     which work like the Python minidom module&#8217;s functions of the same names:
   </p>
   <blockquote class="code"><div><code class="py">
-    doc= pxdom.parse('F:\\data\\doc.xml') <br />
+    doc= pxdom.parse(r'F:\data\doc.xml') <br />
     doc= pxdom.parseString('&lt;el attr="val">content&lt;/el>')
   </code></div></blockquote>
+  <p>
+    You can also get a quick character-serialization by accessing the <code class="py">pxdomContent</code>
+    property of any node.
+  </p>
 
   <h3> DOMConfiguration parameters </h3>
   <p>
@@ -83,7 +116,7 @@
   </p>
   <p>
     If you use the <code class="py">parse</code> and <code class="py">parseString</code> functions,
-    pxdom will set the parameter &#8216;cdata-sections&#8217; to <code class="py">True</code>,
+    pxdom will default the parameter &#8216;cdata-sections&#8217; to <code class="py">True</code>,
     allowing CDATA sections to stay in the document, and the parameter &#8216;pxdom-resolve-resources&#8217;
     to <code class="py">False</code> so external entities and the external subset are left alone.
     This is to emulate the behaviour of the Python standard library&#8217;s minidom module.
@@ -159,7 +192,8 @@
     When the convenience functions <code class="py">parse</code>
     and <code class="py">parseString</code> are called,
     &#8216;pxdom-resolve-resources&#8217; will be false by default, instead of true,
-    for minidom compatibility.
+    for minidom compatibility. This is also the safest option for parsing simple
+    standalone XML.
   </p>
 
   <h4> pxdom-normalize-text </h4>
@@ -275,7 +309,7 @@
   <p>
     Read-only property giving a DOM Level 3 DOMLocator object for any Node.
     If the Node was created by a parsing operation this will reveal the file and
-    row/column number in which the node was found - particularly useful for
+    row/column number in which the node was found: particularly useful for
     error-reporting purposes.
   </p>
 
@@ -289,6 +323,11 @@
     All nodes have a readable <code class="py">pxdomContent</code>, but only those at content level are
     writable (attribute nodes, for instance, are not). The document&#8217;s <code class="py">domConfig</code>
     is used to give parameters for parse and serialise operations invoked by <code class="py">pxdomContent</code>.
+  </p>
+  <p>
+    The value read from pxdomContent is a character string, not a byte string, so it
+    is not suitable for writing directly to a file. Use an <code class="py">LSSerializer</code>
+    to serialise a document to a byte stream.
   </p>
   <p>
     <code class="py">pxdomContent</code> is an extended replacement for the
@@ -374,6 +413,29 @@
   </p>
 
   <h2 id="changes"> Changelog </h2>
+  <h3> Updates from 1.4 to 1.5 </h3>
+  <ul>
+    <li>
+      Allow a DOCTYPE declaration to be parsed for a non-namespace-well-formed root
+      element name, when the 'namespaces' DOMConfiguration parameter is turned off
+      in the parser.
+    </li>
+    <li>
+      Defer DOM Level 3 UserDataHandler callbacks until the end of a deep clone/import/adopt
+      operation, to ensure the related nodes are in the expected final state. (Hat tip: Anjan Samanta.)
+    </li>
+    <li>
+      Element content parser made non-recursive. In theory this allows a document with
+      elements nested a thousand levels deep to be parsed without causing a Python
+      RecursionError. However, trees of this depth may still cause RecursionErrors when
+      dealt with using other recursive algorithms (such as normalisation and serialisation).
+      The main rationale behind making it work for parsing is to ensure a more useful error is
+      generated when trying to parse a long, non-well-formed document that habitually leaves
+      its elements open.
+    </li>
+  </ul>
+
+  </ul>
   <h3> Updates from 1.3 to 1.4 </h3>
   <ul>
     <li>
@@ -641,7 +703,7 @@
 
   <h2> Licence (new-BSD-style) </h2>
   <p>
-    Copyright &#169; 2005, Andrew Clover. All rights reserved.
+    Copyright &#169; 2008, Andrew Clover. All rights reserved.
   </p>
   <p>
     Redistribution and use in source and binary forms, with or without modification,
