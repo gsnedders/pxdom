@@ -1,11 +1,11 @@
 <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/xhtml1-strict.dtd">
 <html xmlns="http://www.w3.org/1999/xhtml"><head>
-  <title> pxdom 1.5 documentation </title>
+  <title> pxdom 1.6 documentation </title>
   <link rel="stylesheet" href="/style/pxtl.css" />
 </head><body>
   <h1>pxdom</h1>
   <div id="subhead">
-    pxdom 1.5 <br />
+    pxdom 1.6 <br />
     A Python DOM implementation
   </div>
   <p id="nav">
@@ -23,8 +23,8 @@
     <li> name character checking is only completely rigorous for XML 1.1. </li>
   </ul>
   <p>
-    pxdom runs on Python 1.5.2 or later, and has been tested up to 2.5.2.
-    Certain features are dependent on Python version:
+    pxdom runs on Python 1.5.2 or later, and has been tested up to 2.7. It will
+    not currently run on Python 3. Certain features are dependent on Python version:
   </p>
   <ul>
     <li> for Unicode, Python 1.6 or later is required; </li>
@@ -35,7 +35,7 @@
   <h2> Installation </h2>
   <p>
     Copy pxdom.py into any folder in your Python path, for example
-    /usr/lib/python/site-packages or C:\Python23\Lib\site-packages.
+    /usr/lib/python/site-packages or C:\Python26\Lib\site-packages.
     Pre-compile bytecode version with &#8216;import pxdom&#8217;
     if necessary.
   </p>
@@ -413,12 +413,24 @@
   </p>
 
   <h2 id="changes"> Changelog </h2>
+  <h3> Updates from 1.5 to 1.6 </h3>
+  <ul>
+    <li>
+      On parsing a mismatched end-tag, try to provide useful information on location of start
+      tag, when known, to aid debugging well-formedness problems.
+    </li>
+    <li>
+      Fixed broken canonical-form code including serialisation of U+2028 whitespace character in
+      attribute values.
+    </li>
+  </ul>
+
   <h3> Updates from 1.4 to 1.5 </h3>
   <ul>
     <li>
       Allow a DOCTYPE declaration to be parsed for a non-namespace-well-formed root
       element name, when the 'namespaces' DOMConfiguration parameter is turned off
-      in the parser.
+      in the parser. (Hat tip: Geoffrey Sneddon)
     </li>
     <li>
       Defer DOM Level 3 UserDataHandler callbacks until the end of a deep clone/import/adopt

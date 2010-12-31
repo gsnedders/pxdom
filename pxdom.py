@@ -6,7 +6,7 @@ Includes pure-Python non-validating parser.
 
 __version__= 1,6
 __author__= 'Andrew Clover <and@doxdesk.com>'
-__date__= 2008,5,1
+__date__= 2010,12,30
 __all__= ['getDOMImplementation', 'getDOMImplementations', 'parse', 'parseString', 'DOMException']
 
 
@@ -41,9 +41,13 @@ except NameError:
 # Use sets where available for low-level character matching
 #
 try:
-    from sets import ImmutableSet
-except ImportError:
-    ImmutableSet= lambda x: x
+    frozenset
+except NameError:
+    try:
+        from sets import frozenset
+        frozenset= frozenset
+    except ImportError:
+        frozenset= lambda x: x
 
 # Check unicode is supported (Python 1.6+), provide dummy class to use with
 # isinstance
@@ -67,22 +71,22 @@ except ImportError:
 # XML character classes. Provide only an XML 1.1 character model for NAMEs, as
 # 1.0's rules are insanely complex.
 #
-DEC= ImmutableSet('0123456789')
-HEX= ImmutableSet('0123456789abcdefABDCDEF')
+DEC= frozenset('0123456789')
+HEX= frozenset('0123456789abcdefABDCDEF')
 LS= ('\r\n', '\r')
 WHITE= ' \t\n\r'
 
-NOTCHAR= ImmutableSet('\x00\x01\x02\x03\x04\x05\x06\x07\x08\x0B\x0C\x0E\x0F\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x7F')
-NOTFIRST= ImmutableSet('.-0123456789')
-NOTNAME= ImmutableSet(' \t\n\r!"#$%&\'()*+,/;<=>?@[\\]^`{|}~')
-NOTURI= ImmutableSet(
+NOTCHAR= frozenset('\x00\x01\x02\x03\x04\x05\x06\x07\x08\x0B\x0C\x0E\x0F\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x7F')
+NOTFIRST= frozenset('.-0123456789')
+NOTNAME= frozenset(' \t\n\r!"#$%&\'()*+,/;<=>?@[\\]^`{|}~')
+NOTURI= frozenset(
     string.join(map(chr, range(0, 33)+range(127,256)), '')+'<>"{}\^`'
 )
 
 if unicode is not None:
     LSU= unichr(0x85), unichr(0x2028)
     WHITEU= unichr(0x85)+unichr(0x2028)
-    NOTCHARU= ImmutableSet(
+    NOTCHARU= frozenset(
         unicode('\x80\x81\x82\x83\x84\x86\x87\x88\x89\x8A\x8B\x8C\x8D\x8E\x8F\x90\x91\x92\x93\x94\x95\x96\x97\x98\x99\x9A\x9B\x9C\x9D\x9E\x9F', 'iso-8859-1')
        +unichr(0xFFFE)+unichr(0xFFFF)
     )
@@ -2556,7 +2560,7 @@ def _Node__compareDocumentPosition(self, other):
     other_determining= container
     container= container._containerNode
   else:
-    if id(other)>id(self):
+    if id(other)>id(self): # XXX may not be right - spec implies we might be supposed to look at child index order?!
       return (
         Node.DOCUMENT_POSITION_DISCONNECTED +
         Node.DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC +
@@ -3873,7 +3877,12 @@ class LSParser(DOMObject):
           if etagname is None:
             self._error('Unexpected %s end-tag' % name)
           if name!=etagname:
-            self._error('Expected %s end-tag, got %s' % (etagname, name))
+            startcontext= ''
+            if filtering==NodeFilter.FILTER_ACCEPT and parentNode.nodeType==parentNode.ELEMENT_NODE:
+              loc= parentNode.pxdomLocation
+              if loc is not None and loc.lineNumber!=-1 and loc.columnNumber!=-1:
+                startcontext= ' to match start-tag at line %i char %i' % (loc.lineNumber, loc.columnNumber)
+            self._error('Expected %s end-tag%s, got %s' % (etagname, startcontext, name))
           self._white(False)
           if not self._match('>'):
             self._error('Expected close angle bracket')
@@ -5186,7 +5195,6 @@ def _Element___writeTo(self, dest, config, filter, newLine, namespaces):
   # If outputting canonically, put the attribute list in order.
   #
   if config.getParameter('canonical-form'):
-    attrs= attrs._list[:]
     attrs.sort(_canonicalAttrSort)
 
   # Write beginning of start-tag.
@@ -5264,11 +5272,11 @@ def _Attr___writeTo(
   if not self._specified and config.getParameter('discard-default-content'):
     return
   if self.namespaceURI==NSNS and config.getParameter('canonical-form'):
-    prefix= [self.localName, None][self.prefix is None]
+    p= [self.localName, None][self.prefix is None]
     value= None
     if self._containerNode is not None:
       if self._containerNode.parentNode is not None:
-        value= self._containerNode.parentNode._lookupNamespaceURI(prefix)
+        value= self._containerNode.parentNode.lookupNamespaceURI(p)
     if self.value==(value or ''):
       return
 
@@ -5288,8 +5296,8 @@ def _Attr___writeTo(
   if config.getParameter('canonical-form'):
     s= r(r(r(r(r(r(self.value, '&', '&amp;'), '<','&lt;'),'"','&quot;'),
       '\x0D','&#xD;'),'\n','&#xA'),'\t','&#x9;')
-    if isinstance(m, Unicode):
-      m= r(r(m, unichr(0x85), '&#x85;'), unichr(0x2028), unichr(0x2028))
+    if isinstance(s, Unicode):
+      s= r(r(s, unichr(0x85), '&#x85;'), unichr(0x2028), '&#x2028;')
     dest.write(s, _Charreffer(True))
 
   # Otherwise, iterate into children, but replacing " marks. Don't filter
